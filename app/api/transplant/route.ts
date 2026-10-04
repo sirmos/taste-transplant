@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { qloo } from "@/lib/qloo";
 
 export const maxDuration = 60;
+const MAX_PLACES = 8; // most places we use from one list
 
 // ---------- small helpers (nothing here is specific to one city or one kind of place) ----------
 const COMMON = new Set(["the", "and", "bar", "cafe", "coffee", "restaurant", "hotel", "resort", "beach", "park", "market", "club", "lounge", "grill", "house", "shop", "store", "pub"]);
@@ -71,16 +72,15 @@ async function pool<T, R>(items: T[], n: number, fn: (x: T) => Promise<R>): Prom
 // ---------- step 1: find the places the person typed ----------
 // A place counts as found if it is in the home city, or in the same country as the places that are.
 async function findSeeds(names: string[], homeCity: string) {
-  const rows: { typed: string; list: any[]; here?: any; near: any[] }[] = [];
-  for (const typed of names) {
+  const rows = await pool(names, 3, async (typed) => {
     const withCity = await lookup(`${typed} ${homeCity}`);
     let list = withCity.filter((e) => similar(typed, e.name));
     if (!list.some((e) => inCity(e, homeCity))) {
       const alone = await lookup(typed);
       list = [...list, ...alone.filter((e) => similar(typed, e.name) && !list.some((x) => x.entity_id === e.entity_id))];
     }
-    rows.push({ typed, list, here: list.find((e) => inCity(e, homeCity)), near: withCity.filter((e) => inCity(e, homeCity)) });
-  }
+    return { typed, list, here: list.find((e) => inCity(e, homeCity)), near: withCity.filter((e) => inCity(e, homeCity)) };
+  });
   const countries = rows.map((r) => countryOf(r.here)).filter(Boolean);
   const homeCountry = [...countries].sort((a, b) => countries.filter((c) => c === b).length - countries.filter((c) => c === a).length)[0];
   const out: { typed: string; strict: any; suggestions: string[] }[] = [];
@@ -139,7 +139,9 @@ const cache = new Map<string, { t: number; v: any }>();
 export async function POST(req: NextRequest) {
   try {
     const { homeCity, newCity, loves } = await req.json();
-    const names: string[] = (loves ?? []).map((s: string) => s.trim()).filter(Boolean).slice(0, 6);
+    const all: string[] = (loves ?? []).map((s: string) => s.trim()).filter(Boolean);
+    const names = all.slice(0, MAX_PLACES);
+    const skipped = all.slice(MAX_PLACES);
     if (!homeCity?.trim() || !newCity?.trim() || names.length < 2) {
       return NextResponse.json({ error: "Add your home city, your new city, and at least 2 places you loved." }, { status: 400 });
     }
@@ -195,14 +197,31 @@ export async function POST(req: NextRequest) {
       };
     };
 
-    const [photo, popular, lanes] = await Promise.all([cityPhoto(newCity), popularFor(), pool(seeds.slice(0, 6), 3, laneFor)]);
+    const [photo, popular, lanes] = await Promise.all([cityPhoto(newCity), popularFor(), pool(seeds, 3, laneFor)]);
+    const keep = lanes.filter((l) => l.items.length > 0);
+    const popularItems = popular.map((p) => shape(p, new Set(), false));
+
+    // Qloo's matching calls often leave out photos. The entity lookup has them, so fetch photos for the cards without one.
+    const everyItem = [...keep.flatMap((l) => l.items), ...popularItems];
+    const missing = [...new Set(everyItem.filter((i) => !i.image).map((i) => String(i.id)))];
+    const chunks: string[][] = [];
+    for (let k = 0; k < missing.length; k += 20) chunks.push(missing.slice(k, k + 20));
+    await pool(chunks, 2, async (chunk) => {
+      const ents = await q("/entities", { entity_ids: chunk.join(",") }).then(listOf);
+      for (const e of ents) {
+        const url = e.properties?.image?.url;
+        if (url) everyItem.filter((i) => String(i.id).toUpperCase() === String(e.entity_id).toUpperCase()).forEach((i) => (i.image = url));
+      }
+    });
+    console.log("PHOTOS", everyItem.filter((i) => i.image).length, "of", everyItem.length);
 
     const body = {
       cityImage: photo,
       guessed: false,
+      skipped,
       understood: found.map((f) => ({ typed: f.typed, matched: f.strict?.name ?? null, suggestions: f.suggestions })),
-      lanes: lanes.filter((l) => l.items.length > 0),
-      popular: popular.map((p) => shape(p, new Set(), false)),
+      lanes: keep,
+      popular: popularItems,
     };
     cache.set(key, { t: Date.now(), v: body });
     return NextResponse.json(body);

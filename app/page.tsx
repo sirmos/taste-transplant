@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { Coffee, Wine, Music, BookOpen, Shirt, MapPin, Copy, Check, Trophy, ShoppingBag, Utensils, Bed, TreePine, Landmark, Scissors, Sparkles } from "lucide-react";
+import { Coffee, Wine, Music, BookOpen, Shirt, MapPin, Copy, Check, Share2, Trophy, ShoppingBag, Utensils, Bed, TreePine, Landmark, Scissors, Sparkles } from "lucide-react";
 
 type Item = { id: string; name: string; image: string; where: string; description: string; tags: string[]; shared?: string[]; exact?: boolean };
 type Lane = { id: string; title: string; kind: string; items: Item[] };
@@ -27,11 +27,28 @@ function iconFor(kind: string) {
   if (/museum|art|gallery|church|mosque|temple/.test(k)) return Landmark;
   return Sparkles;
 }
+const MAX_PLACES = 8;
 const D = "font-[family-name:var(--font-display)]";
 const slot = "field-sizing-content min-w-[7ch] border-b-2 border-[#FFC43D] bg-transparent px-1 text-[#FFC43D] placeholder:text-[#FFC43D]/40 focus:border-white focus:text-white focus:outline-none";
 
 type Style = { color: string; soft: string; Icon: typeof Coffee };
 function Card({ it, c, mode, city }: { it: Item; c: Style; mode: "you" | "popular"; city: string }) {
+  async function share() {
+    const maps = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${it.name} ${city}`)}`;
+    let where = "";
+    if (window.confirm("Add your current location to the message? Your phone will ask for permission.")) {
+      try {
+        const pos = await new Promise<GeolocationPosition>((ok, no) => navigator.geolocation.getCurrentPosition(ok, no, { timeout: 8000 }));
+        where = `\nMy location now: https://www.google.com/maps?q=${pos.coords.latitude},${pos.coords.longitude}`;
+      } catch {}
+    }
+    const text = `I am planning to go to ${it.name} in ${city}.\nMap: ${maps}${where}\nPlease check on me later.`;
+    if (navigator.share) await navigator.share({ text }).catch(() => {});
+    else {
+      await navigator.clipboard.writeText(text);
+      window.alert("Trip details copied. Paste them to someone you trust.");
+    }
+  }
   const pill = mode === "popular" ? "Popular pick" : it.exact ? "Same brand" : "";
   return (
     <li className="overflow-hidden rounded-2xl bg-white shadow-[0_1px_2px_rgba(21,11,46,.06),0_10px_28px_-14px_rgba(21,11,46,.25)] transition hover:-translate-y-1">
@@ -55,10 +72,15 @@ function Card({ it, c, mode, city }: { it: Item; c: Style; mode: "you" | "popula
           </p>
         )}
         {it.description && <p className="mt-3 line-clamp-2 text-sm text-[#4A4166]">{it.description}</p>}
-        <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${it.name} ${city}`)}`} target="_blank" rel="noreferrer"
-          className="mt-3 inline-flex items-center gap-1 text-sm font-semibold" style={{ color: c.color }}>
-          <MapPin size={14} /> Open in Maps
-        </a>
+        <div className="mt-3 flex items-center gap-4">
+          <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${it.name} ${city}`)}`} target="_blank" rel="noreferrer"
+            className="inline-flex items-center gap-1 text-sm font-semibold" style={{ color: c.color }}>
+            <MapPin size={14} /> Open in Maps
+          </a>
+          <button onClick={share} className="inline-flex items-center gap-1 text-sm font-semibold text-[#4A4166] hover:text-[#150B2E]">
+            <Share2 size={14} /> Share trip
+          </button>
+        </div>
       </div>
     </li>
   );
@@ -72,6 +94,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [lanes, setLanes] = useState<Lane[]>([]);
   const [popular, setPopular] = useState<Item[]>([]);
+  const [skipped, setSkipped] = useState<string[]>([]);
   const [understood, setUnderstood] = useState<Understood[]>([]);
   const [shownCity, setShownCity] = useState("");
   const [cityImage, setCityImage] = useState("");
@@ -79,6 +102,7 @@ export default function Home() {
   const [mode, setMode] = useState<"you" | "popular">("you");
   const [copied, setCopied] = useState(false);
 
+  const typedCount = loves.split("\n").filter((l) => l.trim()).length;
   const total = lanes.reduce((n, l) => n + l.items.length, 0);
   const compared = popular.length > 0 ? total : 0;
   const popularIds = new Set(popular.map((p) => p.id));
@@ -112,6 +136,7 @@ export default function Home() {
       if (!res.ok) throw new Error(data.error || "Something went wrong. Try again.");
       setLanes(data.lanes);
       setPopular(data.popular ?? []);
+      setSkipped(data.skipped ?? []);
       setUnderstood(data.understood);
       setCityImage(data.cityImage);
       setGuessed(data.guessed);
@@ -151,7 +176,7 @@ export default function Home() {
               <input className={slot} value={next} onChange={(e) => setNext(e.target.value)} placeholder="Chicago" aria-label="City you moved to" />.
             </p>
             <label className="mt-6 block">
-              <span className="text-sm font-medium text-white/80">The places I miss most (one per line, at least 2)</span>
+              <span className="text-sm font-medium text-white/80">The places I miss most (one per line, 2 to 8)</span>
               <textarea
                 className="mt-2 h-28 w-full rounded-2xl border border-white/20 bg-white/10 px-4 py-3 text-white placeholder:text-white/40 focus:border-[#FFC43D] focus:outline-none"
                 value={loves}
@@ -159,6 +184,9 @@ export default function Home() {
                 placeholder={"My favorite cafe\nThe bar we always ended up at\nThat little bookshop"}
               />
             </label>
+            <p className={`mt-2 text-sm ${typedCount > MAX_PLACES ? "text-[#FFC43D]" : "text-white/60"}`}>
+              {typedCount} of {MAX_PLACES} places{typedCount > MAX_PLACES ? `. Only the first ${MAX_PLACES} will be used.` : ""}
+            </p>
             <div className="mt-5 flex flex-wrap gap-3">
               <button onClick={go} disabled={busy} className="rounded-full bg-[#FFC43D] px-7 py-3.5 font-semibold text-[#150B2E] transition hover:bg-white disabled:opacity-60">
                 {busy ? "Matching your taste..." : "Find my matches"}
@@ -215,6 +243,7 @@ export default function Home() {
             </p>
             {guessed && <p className="mt-2 text-sm text-[#8A5A00]">We could not find exact matches, so these results use the closest places we found.</p>}
             {understood.some((u) => !u.matched) && <p className="mt-2 text-sm text-[#8A5A00]">We could not find every place. Try the name as it appears on Google Maps, or a shorter version.</p>}
+            {skipped.length > 0 && <p className="mt-2 text-sm text-[#8A5A00]">We used the first {MAX_PLACES} places. Left out: {skipped.join(", ")}.</p>}
             {understood.filter((u) => !u.matched && u.suggestions?.length).map((u) => (
               <p key={u.typed} className="mt-2 flex flex-wrap items-center gap-2 text-sm text-[#4A4166]">
                 <span>Did you mean, for {u.typed}:</span>
