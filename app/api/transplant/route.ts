@@ -12,7 +12,7 @@ const listOf = (d: any): any[] => (Array.isArray(d?.results) ? d.results : d?.re
 const tagId = (t: any) => String(t?.id ?? t?.tag_id ?? t?.tag_value ?? "");
 const countryOf = (e: any) => String(e?.properties?.geocode?.country ?? "").toLowerCase();
 const inCity = (e: any, city: string) => `${e?.properties?.geocode?.city ?? ""} ${e?.properties?.address ?? ""}`.toLowerCase().includes(city.toLowerCase());
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const uniq = (list: any[]) => list.filter((e, i) => list.findIndex((x) => x.entity_id === e.entity_id) === i);
 const UA = { "User-Agent": "TasteTransplant/1.0 (hackathon demo)" };
 type Params = Record<string, string | number | boolean | undefined>;
