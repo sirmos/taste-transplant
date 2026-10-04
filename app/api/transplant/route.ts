@@ -15,6 +15,7 @@ const inCity = (e: any, city: string) => `${e?.properties?.geocode?.city ?? ""} 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const uniq = (list: any[]) => list.filter((e, i) => list.findIndex((x) => x.entity_id === e.entity_id) === i);
 const UA = { "User-Agent": "TasteTransplant/1.0 (hackathon demo)" };
+type Params = Record<string, string | number | boolean | undefined>;
 
 // Does a name found in Qloo look like what the person typed?
 function similar(typed: string, found: string) {
@@ -40,14 +41,28 @@ const sameBrand = (brand: string, name: string) => {
   return a.length > 0 && compact(name).includes(a.join(""));
 };
 
-// One call to Qloo. If it fails, say why in the terminal and try once more.
-async function q(path: string, params: Record<string, string | number | boolean | undefined>) {
-  for (let i = 0; i < 2; i++) {
+// ---------- calling Qloo politely ----------
+// Qloo blocks bursts (error 429), so calls start at least 180 ms apart, and a busy answer is retried after a wait.
+let chain: Promise<void> = Promise.resolve();
+const spaced = () => {
+  const p = chain.then(() => sleep(180));
+  chain = p;
+  return p;
+};
+async function q(path: string, params: Params) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await spaced();
     try {
       return await qloo(path, params);
     } catch (e) {
-      console.log("QLOO FAILED", path, "|", (e as Error).message.slice(0, 120));
-      await sleep(400);
+      const msg = (e as Error).message;
+      console.log("QLOO FAILED", path, "|", msg.slice(0, 140));
+      if (/QLOO_API_KEY is missing|Qloo 40[13]/.test(msg)) throw e; // key problem: stop and tell the user
+      if (/Qloo 429/.test(msg)) {
+        await sleep(1000 * (attempt + 1)); // busy: wait longer, then try again
+        continue;
+      }
+      return undefined; // bad request or no data: retrying will not help
     }
   }
   return undefined;
@@ -67,6 +82,48 @@ async function pool<T, R>(items: T[], n: number, fn: (x: T) => Promise<R>): Prom
     })
   );
   return out;
+}
+
+// ---------- the new city: a photo, its coordinates, and a way to filter places to it ----------
+async function wikiPage(extra: string) {
+  try {
+    const r = await fetch(`https://en.wikipedia.org/w/api.php?action=query&redirects=1&prop=pageimages|coordinates&piprop=thumbnail&pithumbsize=1000&colimit=1&format=json&${extra}`, { headers: UA, signal: AbortSignal.timeout(6000) });
+    const j = await r.json();
+    return Object.values(j?.query?.pages ?? {})[0] as any;
+  } catch {
+    return undefined;
+  }
+}
+async function cityInfo(city: string) {
+  const t = encodeURIComponent(city.trim());
+  let page = await wikiPage(`titles=${t}`);
+  if (!page || page.missing !== undefined || (!page.thumbnail && !page.coordinates)) page = (await wikiPage(`generator=search&gsrsearch=${t}&gsrlimit=1`)) ?? page;
+  const c = page?.coordinates?.[0];
+  return { photo: (page?.thumbnail?.source as string) ?? "", lat: c?.lat as number | undefined, lon: c?.lon as number | undefined };
+}
+
+// Qloo cannot always find a city by name (small cities, spelling). We try the name first,
+// then the city's coordinates, and keep whichever way gives places that are really local.
+const whereCache = new Map<string, Params>();
+async function whereParams(city: string, lat?: number, lon?: number) {
+  const key = city.trim().toLowerCase();
+  const hit = whereCache.get(key);
+  if (hit) return hit;
+  const tries: Params[] = [{ "filter.location.query": city }];
+  if (lat !== undefined && lon !== undefined) {
+    const pt = `POINT(${lon} ${lat})`;
+    tries.push({ "filter.location": pt, "filter.location.radius": 20000 }, { "filter.location": pt, "filter.distance.max": 20 }, { "signal.location": pt, "filter.distance.max": 20 });
+  }
+  for (const t of tries) {
+    const r = await q("/v2/insights", { "filter.type": "urn:entity:place", take: 5, ...t }).then(listOf);
+    const local = r.length > 0 && new Set(r.map(countryOf)).size === 1; // if the setting was ignored, results come from all over the world
+    if (local) {
+      console.log("LOCATION works with:", Object.keys(t).join(" + "));
+      whereCache.set(key, t);
+      return t;
+    }
+  }
+  return undefined;
 }
 
 // ---------- step 1: find the places the person typed ----------
@@ -97,24 +154,14 @@ async function findSeeds(names: string[], homeCity: string) {
   return out;
 }
 
-// ---------- city photo ----------
-async function cityPhoto(city: string) {
-  const title = encodeURIComponent(city.trim());
-  try {
-    const r = await fetch(`https://en.wikipedia.org/w/api.php?action=query&redirects=1&titles=${title}&prop=pageimages&piprop=thumbnail&pithumbsize=1000&format=json`, { headers: UA, signal: AbortSignal.timeout(6000) });
-    const j = await r.json();
-    const page: any = Object.values(j?.query?.pages ?? {})[0];
-    if (page?.thumbnail?.source) return page.thumbnail.source as string;
-  } catch {}
-  return "";
-}
-
 // ---------- what kind of place is it, and what do two places have in common ----------
 const GENERIC = new Set(["tourist_attraction", "point_of_interest", "establishment", "food", "store", "place"]);
 function categoryOf(e: any): { id: string; name: string } | undefined {
-  const specific = (e?.tags ?? []).filter((t: any) => /^urn:tag:(category|genre):place/.test(tagId(t)) && !GENERIC.has(tagId(t).split(":").pop()!));
-  const best = specific.find((t: any) => /category:place/.test(tagId(t))) ?? specific[0];
-  return best ? { id: tagId(best), name: best.name } : undefined;
+  const specific: any[] = (e?.tags ?? []).filter((t: any) => /^urn:tag:(category|genre):place/.test(tagId(t)) && !GENERIC.has(tagId(t).split(":").pop()!));
+  const nm = String(e?.name ?? "").toLowerCase();
+  // Prefer a kind of place the name itself mentions ("Villa Marina Hotel" is a hotel), then a category tag.
+  const best = specific.find((t) => nm.includes(String(t.name).toLowerCase())) ?? specific.find((t) => /category:place/.test(tagId(t))) ?? specific[0];
+  return best ? { id: tagId(best), name: best.name as string } : undefined;
 }
 const MEANINGFUL = /^urn:tag:(category|genre|setting|ambience|decor|customer_identity|visit_intent|menu_highlight|specialty_dish|interests|activity_type|neighborhood_characteristic|good_for)/;
 
@@ -149,6 +196,16 @@ export async function POST(req: NextRequest) {
     const hit = cache.get(key);
     if (hit && Date.now() - hit.t < 10 * 60 * 1000) return NextResponse.json(hit.v);
 
+    // 1) Can we filter places to the new city? Check first, so a typo gives a clear message and not an empty page.
+    const info = await cityInfo(newCity);
+    const where = await whereParams(newCity, info.lat, info.lon);
+    if (!where) {
+      const near = await q("/search", { query: newCity, types: "urn:entity:locality", take: 5 }).then(listOf);
+      const tips = [...new Set(near.map((e) => [e.name, e.disambiguation ?? e.properties?.disambiguation].filter(Boolean).join(", ") as string))].slice(0, 3);
+      return NextResponse.json({ error: `We could not find "${newCity}" on the map. Check the spelling` + (tips.length ? `. Did you mean: ${tips.join("; ")}?` : ", or try a bigger city nearby.") }, { status: 422 });
+    }
+
+    // 2) Find the places the person typed.
     const found = await findSeeds(names, homeCity);
     const seeds: any[] = found.filter((f) => f.strict).map((f) => f.strict);
     if (seeds.length === 0) {
@@ -159,18 +216,11 @@ export async function POST(req: NextRequest) {
 
     // Matches for one place: ask Qloo for places with similar taste in the new city.
     const matchesFor = (id: string, tags: string[]) =>
-      q("/v2/insights", {
-        "filter.type": "urn:entity:place",
-        "signal.interests.entities": id,
-        "filter.location.query": newCity,
-        "filter.tags": tags.length ? tags.join(",") : undefined,
-        "bias.content_based": 0.9,
-        take: 8,
-      }).then(listOf);
+      q("/v2/insights", { "filter.type": "urn:entity:place", "signal.interests.entities": id, ...where, "filter.tags": tags.length ? tags.join(",") : undefined, "bias.content_based": 0.9, take: 8 }).then(listOf);
 
     const popularFor = async () => {
       for (const extra of [{ "bias.quality": "high" }, {}]) {
-        const l = await q("/v2/insights", { "filter.type": "urn:entity:place", "filter.location.query": newCity, take: 8, ...extra }).then(listOf);
+        const l = await q("/v2/insights", { "filter.type": "urn:entity:place", ...where, take: 8, ...extra }).then(listOf);
         if (l.length) return l;
       }
       return [];
@@ -197,8 +247,11 @@ export async function POST(req: NextRequest) {
       };
     };
 
-    const [photo, popular, lanes] = await Promise.all([cityPhoto(newCity), popularFor(), pool(seeds, 3, laneFor)]);
+    const [popular, lanes] = await Promise.all([popularFor(), pool(seeds, 3, laneFor)]);
     const keep = lanes.filter((l) => l.items.length > 0);
+    if (keep.length === 0) {
+      return NextResponse.json({ error: `Qloo found no matches in ${newCity} for those places. Try a bigger city nearby, or different places.` }, { status: 422 });
+    }
     const popularItems = popular.map((p) => shape(p, new Set(), false));
 
     // Qloo's matching calls often leave out photos. The entity lookup has them, so fetch photos for the cards without one.
@@ -216,7 +269,7 @@ export async function POST(req: NextRequest) {
     console.log("PHOTOS", everyItem.filter((i) => i.image).length, "of", everyItem.length);
 
     const body = {
-      cityImage: photo,
+      cityImage: info.photo,
       guessed: false,
       skipped,
       understood: found.map((f) => ({ typed: f.typed, matched: f.strict?.name ?? null, suggestions: f.suggestions })),
@@ -226,6 +279,12 @@ export async function POST(req: NextRequest) {
     cache.set(key, { t: Date.now(), v: body });
     return NextResponse.json(body);
   } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
+    const msg = (e as Error).message;
+    const friendly = /QLOO_API_KEY/.test(msg)
+      ? "The server has no Qloo key. Add QLOO_API_KEY in the hosting settings."
+      : /Qloo 40[13]/.test(msg)
+        ? "Qloo did not accept the key. Check that QLOO_API_KEY is the hackathon key."
+        : msg;
+    return NextResponse.json({ error: friendly }, { status: 500 });
   }
 }

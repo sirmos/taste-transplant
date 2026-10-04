@@ -132,7 +132,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ homeCity: home, newCity: next, loves: loves.split("\n") }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: "The server took too long or failed. Try fewer places, or try again in a minute." }));
       if (!res.ok) throw new Error(data.error || "Something went wrong. Try again.");
       setLanes(data.lanes);
       setPopular(data.popular ?? []);
