@@ -5,7 +5,7 @@ export const maxDuration = 60;
 const MAX_PLACES = 8; // most places we use from one list
 
 // ---------- small helpers (nothing here is specific to one city or one kind of place) ----------
-const COMMON = new Set(["the", "and", "bar", "cafe", "coffee", "restaurant", "hotel", "resort", "beach", "park", "market", "club", "lounge", "grill", "house", "shop", "store", "pub"]);
+const COMMON = new Set(["the", "and", "bar", "cafe", "coffee", "restaurant", "hotel", "hotels", "resort", "beach", "park", "market", "club", "lounge", "grill", "house", "shop", "store", "pub", "suite", "suites", "suits", "office", "offices", "global", "ltd", "limited", "plc", "company", "co", "services", "service", "group", "international", "nigeria", "enterprise", "enterprises"]);
 const words = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 2 && !COMMON.has(w));
 const compact = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 const listOf = (d: any): any[] => (Array.isArray(d?.results) ? d.results : d?.results?.entities ?? []);
@@ -17,13 +17,31 @@ const uniq = (list: any[]) => list.filter((e, i) => list.findIndex((x) => x.enti
 const UA = { "User-Agent": "TasteTransplant/1.0 (hackathon demo)" };
 type Params = Record<string, string | number | boolean | undefined>;
 
-// Does a name found in Qloo look like what the person typed?
+// Edit distance, so a small typo ("Evaangelical") still matches.
+function lev(a: string, b: string) {
+  const d: number[] = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = d[0];
+    d[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = d[j];
+      d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return d[b.length];
+}
+const close = (a: string, b: string) => a === b || (a.length >= 5 && b.length >= 5 && lev(a, b) <= (a.length >= 9 ? 2 : 1));
+
+// Does a name found in Qloo look like what the person typed? Every distinctive word must be there
+// (for long names, three quarters of them). One shared word like "Global" or "Office" is not enough.
 function similar(typed: string, found: string) {
   const a = words(typed);
   if (a.length === 0) return true;
   if (compact(found).includes(a.join(""))) return true; // "DeChoice" matches "De Choice"
-  const b = words(found).join(" ");
-  return a.filter((w) => b.includes(w)).length >= Math.ceil(a.length / 2);
+  const t = words(found);
+  const need = a.length <= 3 ? a.length : Math.ceil(a.length * 0.75);
+  return a.filter((w) => t.some((x) => close(w, x))).length >= need;
 }
 
 // "First Bank - Uyo CBD Branch" becomes "First Bank". Branch words and the place's own location names
@@ -38,8 +56,12 @@ function brandOf(name: string, places: string[]) {
 }
 const sameBrand = (brand: string, name: string) => {
   const a = words(brand);
-  const c = compact(name);
-  return a.length > 0 && (c.includes(a.join("")) || a.every((w) => c.includes(w)));
+  if (a.length === 0) return false;
+  const first = name.split(/\s[-–|]\s|,|\(/)[0]; // the part before the branch or street
+  const t = first.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 1 && !COMMON.has(w) && !["of", "de", "la", "le", "el", "at", "in", "on"].includes(w));
+  const hasAll = a.every((w) => t.some((x) => close(w, x))) || compact(first).includes(a.join(""));
+  const extra = t.filter((x) => !a.some((w) => close(w, x))).length;
+  return hasAll && extra <= 1;
 };
 
 // ---------- calling Qloo politely ----------
@@ -68,7 +90,9 @@ async function q(path: string, params: Params) {
   }
   return undefined;
 }
-const lookup = async (query: string, take = 6) => listOf(await q("/search", { query, types: "urn:entity:place", take }));
+const lookup = async (query: string, take = 6, extra: Params = {}) => listOf(await q("/search", { query, types: "urn:entity:place", take, ...extra }));
+// Only search within some miles of a point. This works for a city, a town, or a whole state.
+const around = (lat: number, lon: number, miles: number): Params => ({ "filter.location": `${lat},${lon}`, "filter.radius": miles });
 
 // Run a few things at a time, not all at once.
 async function pool<T, R>(items: T[], n: number, fn: (x: T) => Promise<R>): Promise<R[]> {
@@ -129,15 +153,18 @@ async function whereParams(city: string, lat?: number, lon?: number) {
 
 // ---------- step 1: find the places the person typed ----------
 // A place counts as found if it is in the home city, or in the same country as the places that are.
-async function findSeeds(names: string[], homeCity: string) {
+async function findSeeds(names: string[], homeCity: string, home: { lat?: number; lon?: number }) {
+  const hasHome = home.lat !== undefined && home.lon !== undefined;
   const rows = await pool(names, 3, async (typed) => {
-    const withCity = await lookup(`${typed} ${homeCity}`);
-    let list = withCity.filter((e) => similar(typed, e.name));
-    if (!list.some((e) => inCity(e, homeCity))) {
+    // Best way: search by name within reach of the home point. That works whether home is a city or a state.
+    const localList = hasHome ? (await lookup(typed, 8, around(home.lat!, home.lon!, 60))).filter((e) => similar(typed, e.name)) : [];
+    const withCity = localList.length ? [] : await lookup(`${typed} ${homeCity}`);
+    let list = localList.length ? localList : withCity.filter((e) => similar(typed, e.name));
+    if (!localList.length && !list.some((e) => inCity(e, homeCity))) {
       const alone = await lookup(typed);
       list = [...list, ...alone.filter((e) => similar(typed, e.name) && !list.some((x) => x.entity_id === e.entity_id))];
     }
-    return { typed, list, here: list.find((e) => inCity(e, homeCity)), near: withCity.filter((e) => inCity(e, homeCity)) };
+    return { typed, list, here: localList[0] ?? list.find((e) => inCity(e, homeCity)), near: localList.length ? localList : withCity.filter((e) => inCity(e, homeCity)) };
   });
   const countries = rows.map((r) => countryOf(r.here)).filter(Boolean);
   const homeCountry = [...countries].sort((a, b) => countries.filter((c) => c === b).length - countries.filter((c) => c === a).length)[0];
@@ -147,8 +174,8 @@ async function findSeeds(names: string[], homeCity: string) {
     let suggestions: string[] = [];
     if (!strict) {
       const key = words(r.typed).slice(0, 2).join(" ");
-      const short = key ? await lookup(`${key} ${homeCity}`) : [];
-      suggestions = [...new Set([...r.near, ...short.filter((e) => inCity(e, homeCity))].map((e) => e.name as string))].slice(0, 3);
+      const short = key ? (hasHome ? await lookup(key, 6, around(home.lat!, home.lon!, 60)) : await lookup(`${key} ${homeCity}`)) : [];
+      suggestions = [...new Set([...r.near, ...(hasHome ? short : short.filter((e) => inCity(e, homeCity)))].map((e) => e.name as string))].slice(0, 3);
     }
     out.push({ typed: r.typed, strict, suggestions });
   }
@@ -221,7 +248,8 @@ export async function POST(req: NextRequest) {
     }
 
     // 2) Find the places the person typed.
-    const found = await findSeeds(names, homeCity);
+    const homeInfo = await cityInfo(homeCity);
+    const found = await findSeeds(names, homeCity, homeInfo);
     const seeds: any[] = found.filter((f) => f.strict).map((f) => f.strict);
     if (seeds.length === 0) {
       const tips = [...new Set(found.flatMap((f) => f.suggestions))].slice(0, 3);
@@ -251,20 +279,41 @@ export async function POST(req: NextRequest) {
       const brand = brandOf(s.name, [homeCity, ...Object.values(geo).filter((v): v is string => typeof v === "string" && v.toLowerCase() !== country)]);
       const cats = categoriesOf(s.tags?.length ? s : full);
 
-      // Which kind of place is it? Try up to 4 kinds and keep the one with the most matches in the new city.
+      // Which kind of place is it? Qloo's tags can be odd, so try up to 4 readings and keep the one whose
+      // matches look most like your place (they share the most tags with it).
       const kinds = async () => {
         let best: { cat?: { id: string; name: string }; list: any[] } = { list: [] };
+        let bestScore = -1;
         for (const c of cats) {
           const list = await matchesFor(s.entity_id, [c.id]);
-          if (list.length > best.list.length) best = { cat: c, list };
-          if (list.length >= 4) break;
+          if (!list.length) continue;
+          const top = list.slice(0, 4);
+          const score = top.reduce((n, e) => n + sharedOf(e, seedTags).length, 0) / top.length + top.length * 0.1;
+          if (score > bestScore) {
+            best = { cat: c, list };
+            bestScore = score;
+          }
+          if (top.length >= 4 && score >= 3) break; // clearly a good reading, stop early
         }
         if (cats.length === 0) best = { list: (await matchesFor(s.entity_id, [])).filter((e) => sharedOf(e, seedTags).length >= 2) };
         return best;
       };
-      const [sameAll, best] = await Promise.all([brand ? lookup(`${brand} ${newCity}`, 25) : Promise.resolve([]), kinds()]);
       const isSame = (e: any) => sameBrand(brand, e.name);
-      const exact = uniq([...sameAll.filter((e) => isSame(e) && inCity(e, newCity)), ...best.list.filter(isSame)])
+      // Same brand in the new place: search by name within 30 miles of its map point, then 100,
+      // so it works for a city or a whole state. Without coordinates, use the name plus the city.
+      const sameSearch = async () => {
+        if (!brand) return [];
+        if (info.lat !== undefined && info.lon !== undefined) {
+          for (const miles of [30, 100]) {
+            const r = (await lookup(brand, 25, around(info.lat, info.lon, miles))).filter(isSame);
+            if (r.length) return r;
+          }
+          return [];
+        }
+        return (await lookup(`${brand} ${newCity}`, 25)).filter((e) => isSame(e) && inCity(e, newCity));
+      };
+      const [sameAll, best] = await Promise.all([sameSearch(), kinds()]);
+      const exact = uniq([...sameAll, ...best.list.filter(isSame)])
         .sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0))
         .slice(0, 4);
       const others = best.list.filter((e) => !isSame(e)).slice(0, exact.length >= 3 ? 2 : 4);

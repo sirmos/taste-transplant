@@ -177,8 +177,9 @@ export default function Home() {
               I moved from <input className={slot} value={home} onChange={(e) => setHome(e.target.value)} placeholder="Toronto" aria-label="City you moved from" /> to{" "}
               <input className={slot} value={next} onChange={(e) => setNext(e.target.value)} placeholder="Chicago" aria-label="City you moved to" />.
             </p>
+            <p className="mt-2 text-sm text-white/60">Posted to a state? Type the state, or the nearest big town.</p>
             <label className="mt-6 block">
-              <span className="text-sm font-medium text-white/80">The places I miss most (one per line, 2 to 8)</span>
+              <span className="text-sm font-medium text-white/80">The places I miss most (names, one per line, 2 to 8)</span>
               <textarea
                 className="mt-2 h-28 w-full rounded-2xl border border-white/20 bg-white/10 px-4 py-3 text-white placeholder:text-white/40 focus:border-[#FFC43D] focus:outline-none"
                 value={loves}
