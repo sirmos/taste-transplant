@@ -1,36 +1,46 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Taste Transplant
 
-## Getting Started
+Moved somewhere new? Tell the app a few places you loved back home and it finds their closest matches in your new city, with the reason for each match.
 
-First, run the development server:
+Built for the Qloo Agent Hackathon.
 
-```bash
+## What it does
+
+- You type the city you moved from, the city you moved to, and 2 to 6 places you loved.
+- The app finds each place in Qloo, works out what kind of place it is (a stadium, a bar, a bookshop and so on), and builds a section for each kind.
+- Each section shows places in your new city that match your taste, and says which of your places each one is like.
+- A switch lets you compare with the popular places in the new city, so you can see what your taste changes.
+- Each card has an "Open in Maps" link, and you can copy your whole list.
+
+## How Qloo is used
+
+- `/search` finds your places and the home city.
+- `/entities` reads the tags of each place so the app knows what kind of place it is.
+- `/v2/insights` with `filter.type=urn:entity:place`, your places as `signal.interests.entities`, and `filter.location.query` set to the new city gives the matches. `feature.explainability=true` tells us which of your places each match is closest to.
+- The popular view uses the same endpoint with no taste input.
+
+Without Qloo the app would have no way to say that a bar in one city is like a bar in another.
+
+## Run it yourself
+
+1. Get a key for the Qloo hackathon API.
+2. Copy `.env.example` to `.env.local` and put your key in it.
+3. Run:
+
+```
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+4. Open http://localhost:3000
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Settings
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `QLOO_API_KEY`: your key
+- `QLOO_BASE_URL`: `https://hackathon.api.qloo.com`
 
-## Learn More
+The key is only used on the server, so it never reaches the browser.
 
-To learn more about Next.js, take a look at the following resources:
+## License
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+MIT. See the LICENSE file.

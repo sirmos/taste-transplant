@@ -36,16 +36,20 @@ export async function findEntity(name: string, type: string, homeLatLon?: string
 }
 
 // The main move: take taste from one city and ask for matches in another.
+// filter.location.query is what keeps results inside the new city.
+// (signal.location.query only nudges, and still returned the old city.)
 export async function transplant(opts: {
   type: string; // for example "urn:entity:place"
   entityIds: string[];
   newCity: string;
+  tags?: string[]; // optional tag IDs, for example a bar or cafe tag
   take?: number;
 }) {
   const data = await qloo("/v2/insights", {
     "filter.type": opts.type,
     "signal.interests.entities": opts.entityIds.join(","),
-    "signal.location.query": opts.newCity,
+    "filter.location.query": opts.newCity,
+    "filter.tags": opts.tags?.length ? opts.tags.join(",") : undefined,
     "feature.explainability": true,
     take: opts.take ?? 10,
   });
