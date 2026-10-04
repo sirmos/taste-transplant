@@ -54,12 +54,15 @@ function brandOf(name: string, places: string[]) {
   }
   return out.replace(/\b(branch|head office)\b/gi, "").replace(/\bstate\s*$/i, "").replace(/\s+/g, " ").trim();
 }
+const SMALL = new Set(["of", "de", "la", "le", "el", "at", "in", "on"]);
+const tokensOf = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 1 && !COMMON.has(w) && !SMALL.has(w));
 const sameBrand = (brand: string, name: string) => {
   const a = words(brand);
   if (a.length === 0) return false;
-  const first = name.split(/\s[-–|]\s|,|\(/)[0]; // the part before the branch or street
-  const t = first.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 1 && !COMMON.has(w) && !["of", "de", "la", "le", "el", "at", "in", "on"].includes(w));
-  const hasAll = a.every((w) => t.some((x) => close(w, x))) || compact(first).includes(a.join(""));
+  const bracket = tokensOf(name.match(/\(([^)]*)\)/)?.[1] ?? "");
+  if (bracket.length > 0 && a.every((w) => bracket.some((x) => close(w, x)))) return true; // "Nigerian Maritime Agency (NIMASA)"
+  const t = tokensOf(name.split(/\s[-–|]\s|,|\(/)[0]); // the part before the branch or street
+  const hasAll = a.every((w) => t.some((x) => close(w, x))) || compact(name.split(/\s[-–|]\s|,|\(/)[0]).includes(a.join(""));
   const extra = t.filter((x) => !a.some((w) => close(w, x))).length;
   return hasAll && extra <= 1;
 };
@@ -170,7 +173,7 @@ async function findSeeds(names: string[], homeCity: string, home: { lat?: number
   const homeCountry = [...countries].sort((a, b) => countries.filter((c) => c === b).length - countries.filter((c) => c === a).length)[0];
   const out: { typed: string; strict: any; suggestions: string[] }[] = [];
   for (const r of rows) {
-    const strict = r.here ?? (homeCountry ? r.list.find((e) => countryOf(e) === homeCountry) : r.list[0]);
+    const strict = r.here ?? (homeCountry ? r.list.find((e) => countryOf(e) === homeCountry) : undefined);
     let suggestions: string[] = [];
     if (!strict) {
       const key = words(r.typed).slice(0, 2).join(" ");
@@ -303,14 +306,18 @@ export async function POST(req: NextRequest) {
       // so it works for a city or a whole state. Without coordinates, use the name plus the city.
       const sameSearch = async () => {
         if (!brand) return [];
+        const key = words(brand).join(" ");
+        const queries = [...new Set([key, brand].filter(Boolean))];
         if (info.lat !== undefined && info.lon !== undefined) {
           for (const miles of [30, 100]) {
-            const r = (await lookup(brand, 25, around(info.lat, info.lon, miles))).filter(isSame);
-            if (r.length) return r;
+            for (const query of miles === 30 ? queries : queries.slice(0, 1)) {
+              const r = (await lookup(query, 25, around(info.lat, info.lon, miles))).filter(isSame);
+              if (r.length) return r;
+            }
           }
           return [];
         }
-        return (await lookup(`${brand} ${newCity}`, 25)).filter((e) => isSame(e) && inCity(e, newCity));
+        return (await lookup(`${key || brand} ${newCity}`, 25)).filter((e) => isSame(e) && inCity(e, newCity));
       };
       const [sameAll, best] = await Promise.all([sameSearch(), kinds()]);
       const exact = uniq([...sameAll, ...best.list.filter(isSame)])
