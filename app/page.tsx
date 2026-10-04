@@ -95,6 +95,7 @@ export default function Home() {
   const [lanes, setLanes] = useState<Lane[]>([]);
   const [popular, setPopular] = useState<Item[]>([]);
   const [skipped, setSkipped] = useState<string[]>([]);
+  const [empty, setEmpty] = useState<string[]>([]);
   const [understood, setUnderstood] = useState<Understood[]>([]);
   const [shownCity, setShownCity] = useState("");
   const [cityImage, setCityImage] = useState("");
@@ -137,6 +138,7 @@ export default function Home() {
       setLanes(data.lanes);
       setPopular(data.popular ?? []);
       setSkipped(data.skipped ?? []);
+      setEmpty(data.empty ?? []);
       setUnderstood(data.understood);
       setCityImage(data.cityImage);
       setGuessed(data.guessed);
@@ -243,6 +245,7 @@ export default function Home() {
             </p>
             {guessed && <p className="mt-2 text-sm text-[#8A5A00]">We could not find exact matches, so these results use the closest places we found.</p>}
             {understood.some((u) => !u.matched) && <p className="mt-2 text-sm text-[#8A5A00]">We could not find every place. Try the name as it appears on Google Maps, or a shorter version.</p>}
+            {empty.length > 0 && <p className="mt-2 text-sm text-[#8A5A00]">We found nothing close to these in {shownCity}: {empty.join(", ")}.</p>}
             {skipped.length > 0 && <p className="mt-2 text-sm text-[#8A5A00]">We used the first {MAX_PLACES} places. Left out: {skipped.join(", ")}.</p>}
             {understood.filter((u) => !u.matched && u.suggestions?.length).map((u) => (
               <p key={u.typed} className="mt-2 flex flex-wrap items-center gap-2 text-sm text-[#4A4166]">

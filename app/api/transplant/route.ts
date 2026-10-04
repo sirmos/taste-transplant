@@ -26,19 +26,20 @@ function similar(typed: string, found: string) {
   return a.filter((w) => b.includes(w)).length >= Math.ceil(a.length / 2);
 }
 
-// "First Bank - Uyo CBD Branch" becomes "First Bank". Branch and home city names are removed.
-function brandOf(name: string, homeCity: string) {
-  const city = homeCity.replace(/[^\w ]/g, "").trim();
-  return name
-    .split(/\s[-–|]\s|,|\(/)[0]
-    .replace(city ? new RegExp(`\\b${city}\\b`, "ig") : /$^/, "")
-    .replace(/\b(branch|head office)\b/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
+// "First Bank - Uyo CBD Branch" becomes "First Bank". Branch words and the place's own location names
+// (its city, state and so on) are removed, so "NYSC Orientation Camp Akwa Ibom State" becomes "NYSC Orientation Camp".
+function brandOf(name: string, places: string[]) {
+  let out = name.split(/\s[-–|]\s|,|\(/)[0];
+  for (const w of places) {
+    const clean = w.replace(/[^\w ]/g, "").trim();
+    if (clean.length >= 3) out = out.replace(new RegExp(`\\b${clean}\\b`, "ig"), "");
+  }
+  return out.replace(/\b(branch|head office)\b/gi, "").replace(/\bstate\s*$/i, "").replace(/\s+/g, " ").trim();
 }
 const sameBrand = (brand: string, name: string) => {
   const a = words(brand);
-  return a.length > 0 && compact(name).includes(a.join(""));
+  const c = compact(name);
+  return a.length > 0 && (c.includes(a.join("")) || a.every((w) => c.includes(w)));
 };
 
 // ---------- calling Qloo politely ----------
@@ -156,14 +157,28 @@ async function findSeeds(names: string[], homeCity: string) {
 
 // ---------- what kind of place is it, and what do two places have in common ----------
 const GENERIC = new Set(["tourist_attraction", "point_of_interest", "establishment", "food", "store", "place"]);
-function categoryOf(e: any): { id: string; name: string } | undefined {
+// The kinds of place this is (a bank, a bus company...), best guess first. Qloo's tags can be odd, so we keep a few.
+function categoriesOf(e: any, max = 4): { id: string; name: string }[] {
   const specific: any[] = (e?.tags ?? []).filter((t: any) => /^urn:tag:(category|genre):place/.test(tagId(t)) && !GENERIC.has(tagId(t).split(":").pop()!));
   const nm = String(e?.name ?? "").toLowerCase();
-  // Prefer a kind of place the name itself mentions ("Villa Marina Hotel" is a hotel), then a category tag.
-  const best = specific.find((t) => nm.includes(String(t.name).toLowerCase())) ?? specific.find((t) => /category:place/.test(tagId(t))) ?? specific[0];
-  return best ? { id: tagId(best), name: best.name as string } : undefined;
+  const rank = (t: any) => (nm.includes(String(t.name).toLowerCase()) ? 0 : /category:place/.test(tagId(t)) ? 1 : 2);
+  const seen = new Set<string>();
+  return [...specific]
+    .sort((a, b) => rank(a) - rank(b))
+    .filter((t) => {
+      const k = String(t.name).toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
+    .slice(0, max)
+    .map((t) => ({ id: tagId(t), name: t.name as string }));
 }
 const MEANINGFUL = /^urn:tag:(category|genre|setting|ambience|decor|customer_identity|visit_intent|menu_highlight|specialty_dish|interests|activity_type|neighborhood_characteristic|good_for)/;
+
+// Tags a place shares with the place you loved.
+const sharedOf = (p: any, seedTags: Set<string>): string[] =>
+  (p.tags ?? []).filter((t: any) => seedTags.has(tagId(t)) && MEANINGFUL.test(tagId(t)) && !GENERIC.has(tagId(t).split(":").pop()!)).map((t: any) => t.name as string);
 
 function shape(p: any, seedTags: Set<string>, exact: boolean) {
   const g = p.properties?.geocode;
@@ -176,7 +191,7 @@ function shape(p: any, seedTags: Set<string>, exact: boolean) {
     description: p.properties?.description ?? "",
     exact,
     // Tags this place shares with the place you loved: the plain reason it matches.
-    shared: tags.filter((t) => seedTags.has(tagId(t)) && MEANINGFUL.test(tagId(t)) && !GENERIC.has(tagId(t).split(":").pop()!)).slice(0, 3).map((t) => t.name as string),
+    shared: sharedOf(p, seedTags).slice(0, 3),
     tags: tags.filter((t) => /ambience|setting|decor|genre|neighborhood/.test(t.type)).slice(0, 3).map((t) => t.name as string),
   };
 }
@@ -226,23 +241,39 @@ export async function POST(req: NextRequest) {
       return [];
     };
 
-    // One section per place. Same-brand places in the new city come first (at most 2), then similar places.
+    // One section per place. Same-brand places in the new city come first (up to 4, best known first),
+    // then similar places of the same kind. Unrelated places are never used to fill a section.
     const laneFor = async (s: any) => {
       const full = detail.find((d) => d.entity_id?.toUpperCase() === s.entity_id.toUpperCase());
-      const cat = categoryOf(s.tags?.length ? s : full);
       const seedTags = new Set<string>((full?.tags ?? s.tags ?? []).map(tagId));
-      const brand = brandOf(s.name, homeCity);
-      console.log("SEED", s.name, "| brand:", brand, "| category:", cat?.id ?? "none");
+      const geo = s.properties?.geocode ?? {};
+      const country = String(geo.country ?? "").toLowerCase();
+      const brand = brandOf(s.name, [homeCity, ...Object.values(geo).filter((v): v is string => typeof v === "string" && v.toLowerCase() !== country)]);
+      const cats = categoriesOf(s.tags?.length ? s : full);
 
-      const [sameSearch, tagged] = await Promise.all([brand ? lookup(`${brand} ${newCity}`, 10) : Promise.resolve([]), cat ? matchesFor(s.entity_id, [cat.id]) : Promise.resolve([])]);
-      const taste = tagged.length ? tagged : await matchesFor(s.entity_id, []);
+      // Which kind of place is it? Try up to 4 kinds and keep the one with the most matches in the new city.
+      const kinds = async () => {
+        let best: { cat?: { id: string; name: string }; list: any[] } = { list: [] };
+        for (const c of cats) {
+          const list = await matchesFor(s.entity_id, [c.id]);
+          if (list.length > best.list.length) best = { cat: c, list };
+          if (list.length >= 4) break;
+        }
+        if (cats.length === 0) best = { list: (await matchesFor(s.entity_id, [])).filter((e) => sharedOf(e, seedTags).length >= 2) };
+        return best;
+      };
+      const [sameAll, best] = await Promise.all([brand ? lookup(`${brand} ${newCity}`, 25) : Promise.resolve([]), kinds()]);
       const isSame = (e: any) => sameBrand(brand, e.name);
-      const exact = uniq([...sameSearch.filter((e) => isSame(e) && inCity(e, newCity)), ...taste.filter(isSame)]).slice(0, 2);
-      const others = taste.filter((e) => !isSame(e)).slice(0, 4 - exact.length);
+      const exact = uniq([...sameAll.filter((e) => isSame(e) && inCity(e, newCity)), ...best.list.filter(isSame)])
+        .sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0))
+        .slice(0, 4);
+      const others = best.list.filter((e) => !isSame(e)).slice(0, exact.length >= 3 ? 2 : 4);
+      console.log("SEED", s.name, "| brand:", brand, "| kinds:", cats.map((c) => c.name).join(", ") || "none", "| used:", best.cat?.name ?? "none", "| same brand:", exact.length, "| similar:", others.length);
       return {
         id: s.entity_id,
+        seed: s.name as string,
         title: `Because you loved ${s.name}`,
-        kind: cat?.name ?? "Closest matches",
+        kind: best.cat?.name ?? (exact.length ? "Same place" : "Closest matches"),
         items: [...exact.map((e) => shape(e, seedTags, true)), ...others.map((e) => shape(e, seedTags, false))],
       };
     };
@@ -274,6 +305,7 @@ export async function POST(req: NextRequest) {
       skipped,
       understood: found.map((f) => ({ typed: f.typed, matched: f.strict?.name ?? null, suggestions: f.suggestions })),
       lanes: keep,
+      empty: lanes.filter((l) => l.items.length === 0).map((l) => l.seed),
       popular: popularItems,
     };
     cache.set(key, { t: Date.now(), v: body });
