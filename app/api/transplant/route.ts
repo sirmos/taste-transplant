@@ -176,9 +176,19 @@ async function findSeeds(names: string[], homeCity: string, home: { lat?: number
     const strict = r.here ?? (homeCountry ? r.list.find((e) => countryOf(e) === homeCountry) : undefined);
     let suggestions: string[] = [];
     if (!strict) {
-      const key = words(r.typed).slice(0, 2).join(" ");
+      const dist = words(r.typed);
+      const key = dist.slice(0, 2).join(" ");
       const short = key ? (hasHome ? await lookup(key, 6, around(home.lat!, home.lon!, 60)) : await lookup(`${key} ${homeCity}`)) : [];
-      suggestions = [...new Set([...r.near, ...(hasHome ? short : short.filter((e) => inCity(e, homeCity)))].map((e) => e.name as string))].slice(0, 3);
+      let names = [...r.near, ...(hasHome ? short : short.filter((e) => inCity(e, homeCity)))].map((e) => e.name as string);
+      // Nothing near home? Search the name alone and keep places in the home country.
+      if (names.length === 0 && key && homeCountry) {
+        names = (await lookup(key, 8)).filter((e) => countryOf(e) === homeCountry).map((e) => e.name as string);
+      }
+      // Last resort: shorter versions of what was typed, so there is always something to click.
+      const cap = (x: string) => x.replace(/\b\w/g, (c) => c.toUpperCase());
+      const shorter = dist.length >= 2 ? [dist.slice(0, 3).join(" "), dist.slice(0, 2).join(" ")].filter((x) => x && x !== r.typed.toLowerCase()).map(cap) : [];
+      suggestions = [...new Set([...names, ...shorter])].slice(0, 3);
+      console.log("NOT FOUND", r.typed, "| from Qloo:", names.length, "| suggestions:", suggestions.join(" ; ") || "none");
     }
     out.push({ typed: r.typed, strict, suggestions });
   }
