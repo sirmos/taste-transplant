@@ -55,15 +55,28 @@ function brandOf(name: string, places: string[]) {
   return out.replace(/\b(branch|head office)\b/gi, "").replace(/\bstate\s*$/i, "").replace(/\s+/g, " ").trim();
 }
 const SMALL = new Set(["of", "de", "la", "le", "el", "at", "in", "on"]);
+// Corporate filler that says nothing about which business it is.
+const CORP = new Set(["office", "offices", "branch", "head", "hq", "limited", "ltd", "plc", "company", "co", "services", "service", "group", "global", "international", "nigeria", "enterprise", "enterprises", "and", "the"]);
 const tokensOf = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 1 && !COMMON.has(w) && !SMALL.has(w));
-const sameBrand = (brand: string, name: string) => {
+const rawTokens = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 1);
+const sameBrand = (brand: string, e: any) => {
+  const name = String(e?.name ?? "");
   const a = words(brand);
   if (a.length === 0) return false;
   const bracket = tokensOf(name.match(/\(([^)]*)\)/)?.[1] ?? "");
   if (bracket.length > 0 && a.every((w) => bracket.some((x) => close(w, x)))) return true; // "Nigerian Maritime Agency (NIMASA)"
-  const t = tokensOf(name.split(/\s[-–|]\s|,|\(/)[0]); // the part before the branch or street
-  const hasAll = a.every((w) => t.some((x) => close(w, x))) || compact(name.split(/\s[-–|]\s|,|\(/)[0]).includes(a.join(""));
+  const firstSeg = name.split(/\s[-–|]\s|,|\(/)[0]; // the part before the branch or street
+  // The place's own city and area names are not part of its brand ("Shoprite Ikeja" is Shoprite).
+  const area = new Set(Object.values(e?.properties?.geocode ?? {}).filter((v): v is string => typeof v === "string").flatMap(tokensOf));
+  const t = tokensOf(firstSeg).filter((x) => !area.has(x) || a.some((w) => close(w, x)));
+  const hasAll = a.every((w) => t.some((x) => close(w, x))) || compact(firstSeg).includes(a.join(""));
   const extra = t.filter((x) => !a.some((w) => close(w, x))).length;
+  if (a.length === 1) {
+    // One distinctive word (like "golf") is not a brand on its own, so the whole name has to match.
+    const need = rawTokens(brand).filter((w) => !CORP.has(w) && !SMALL.has(w));
+    const have = rawTokens(firstSeg);
+    return need.every((w) => have.some((x) => close(w, x))) && extra <= 2;
+  }
   return hasAll && extra <= 1;
 };
 
@@ -127,7 +140,8 @@ async function cityInfo(city: string) {
   let page = await wikiPage(`titles=${t}`);
   if (!page || page.missing !== undefined || (!page.thumbnail && !page.coordinates)) page = (await wikiPage(`generator=search&gsrsearch=${t}&gsrlimit=1`)) ?? page;
   const c = page?.coordinates?.[0];
-  return { photo: (page?.thumbnail?.source as string) ?? "", lat: c?.lat as number | undefined, lon: c?.lon as number | undefined };
+  const isRegion = /\b(state|province|region|county|territory|prefecture|district)\b/i.test(`${page?.title ?? ""} ${city}`);
+  return { photo: (page?.thumbnail?.source as string) ?? "", lat: c?.lat as number | undefined, lon: c?.lon as number | undefined, isRegion };
 }
 
 // Qloo cannot always find a city by name (small cities, spelling). We try the name first,
@@ -156,11 +170,12 @@ async function whereParams(city: string, lat?: number, lon?: number) {
 
 // ---------- step 1: find the places the person typed ----------
 // A place counts as found if it is in the home city, or in the same country as the places that are.
-async function findSeeds(names: string[], homeCity: string, home: { lat?: number; lon?: number }) {
+async function findSeeds(names: string[], homeCity: string, home: { lat?: number; lon?: number; isRegion?: boolean }) {
   const hasHome = home.lat !== undefined && home.lon !== undefined;
+  const miles = home.isRegion ? 100 : 30; // a city is small, a state is big
   const rows = await pool(names, 3, async (typed) => {
     // Best way: search by name within reach of the home point. That works whether home is a city or a state.
-    const localList = hasHome ? (await lookup(typed, 8, around(home.lat!, home.lon!, 60))).filter((e) => similar(typed, e.name)) : [];
+    const localList = hasHome ? (await lookup(typed, 8, around(home.lat!, home.lon!, miles))).filter((e) => similar(typed, e.name)) : [];
     const withCity = localList.length ? [] : await lookup(`${typed} ${homeCity}`);
     let list = localList.length ? localList : withCity.filter((e) => similar(typed, e.name));
     if (!localList.length && !list.some((e) => inCity(e, homeCity))) {
@@ -178,7 +193,7 @@ async function findSeeds(names: string[], homeCity: string, home: { lat?: number
     if (!strict) {
       const dist = words(r.typed);
       const key = dist.slice(0, 2).join(" ");
-      const short = key ? (hasHome ? await lookup(key, 6, around(home.lat!, home.lon!, 60)) : await lookup(`${key} ${homeCity}`)) : [];
+      const short = key ? (hasHome ? await lookup(key, 6, around(home.lat!, home.lon!, miles)) : await lookup(`${key} ${homeCity}`)) : [];
       let names = [...r.near, ...(hasHome ? short : short.filter((e) => inCity(e, homeCity)))].map((e) => e.name as string);
       // Nothing near home? Search the name alone and keep places in the home country.
       if (names.length === 0 && key && homeCountry) {
@@ -311,7 +326,7 @@ export async function POST(req: NextRequest) {
         if (cats.length === 0) best = { list: (await matchesFor(s.entity_id, [])).filter((e) => sharedOf(e, seedTags).length >= 2) };
         return best;
       };
-      const isSame = (e: any) => sameBrand(brand, e.name);
+      const isSame = (e: any) => sameBrand(brand, e);
       // Same brand in the new place: search by name within 30 miles of its map point, then 100,
       // so it works for a city or a whole state. Without coordinates, use the name plus the city.
       const sameSearch = async () => {
@@ -319,8 +334,9 @@ export async function POST(req: NextRequest) {
         const key = words(brand).join(" ");
         const queries = [...new Set([key, brand].filter(Boolean))];
         if (info.lat !== undefined && info.lon !== undefined) {
-          for (const miles of [30, 100]) {
-            for (const query of miles === 30 ? queries : queries.slice(0, 1)) {
+          const reach = info.isRegion ? [40, 100] : [25];
+          for (const miles of reach) {
+            for (const query of miles === reach[0] ? queries : queries.slice(0, 1)) {
               const r = (await lookup(query, 25, around(info.lat, info.lon, miles))).filter(isSame);
               if (r.length) return r;
             }
@@ -370,6 +386,7 @@ export async function POST(req: NextRequest) {
       guessed: false,
       skipped,
       understood: found.map((f) => ({ typed: f.typed, matched: f.strict?.name ?? null, suggestions: f.suggestions })),
+      seeds: seeds.map((s) => ({ id: s.entity_id as string, name: s.name as string })),
       lanes: keep,
       empty: lanes.filter((l) => l.items.length === 0).map((l) => l.seed),
       popular: popularItems,

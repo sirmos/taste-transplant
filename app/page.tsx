@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import TasteMap, { type Point } from "./TasteMap";
 import { Coffee, Wine, Music, BookOpen, Shirt, MapPin, Copy, Check, Share2, Trophy, ShoppingBag, Utensils, Bed, TreePine, Landmark, Scissors, Sparkles } from "lucide-react";
 
 type Item = { id: string; name: string; image: string; where: string; description: string; tags: string[]; shared?: string[]; exact?: boolean };
@@ -96,6 +97,10 @@ export default function Home() {
   const [popular, setPopular] = useState<Item[]>([]);
   const [skipped, setSkipped] = useState<string[]>([]);
   const [empty, setEmpty] = useState<string[]>([]);
+  const [seeds, setSeeds] = useState<{ id: string; name: string }[]>([]);
+  const [mapFor, setMapFor] = useState("all");
+  const [mapPoints, setMapPoints] = useState<Point[]>([]);
+  const [mapState, setMapState] = useState<"idle" | "loading" | "none">("idle");
   const [understood, setUnderstood] = useState<Understood[]>([]);
   const [shownCity, setShownCity] = useState("");
   const [cityImage, setCityImage] = useState("");
@@ -122,6 +127,22 @@ export default function Home() {
     setTimeout(() => setCopied(false), 2000);
   }
 
+  // Ask Qloo's heatmap which parts of the new city match your places.
+  async function loadMap(which: string, list = seeds, city = shownCity) {
+    setMapFor(which);
+    setMapState("loading");
+    try {
+      const ids = which === "all" ? list.map((x) => x.id) : [which];
+      const res = await fetch("/api/heatmap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ city, ids }) });
+      const data = await res.json().catch(() => ({}));
+      setMapPoints(data.points ?? []);
+      setMapState(data.points?.length ? "idle" : "none");
+    } catch {
+      setMapPoints([]);
+      setMapState("none");
+    }
+  }
+
   async function go() {
     setBusy(true);
     setError("");
@@ -139,6 +160,8 @@ export default function Home() {
       setPopular(data.popular ?? []);
       setSkipped(data.skipped ?? []);
       setEmpty(data.empty ?? []);
+      setSeeds(data.seeds ?? []);
+      loadMap("all", data.seeds ?? [], next);
       setUnderstood(data.understood);
       setCityImage(data.cityImage);
       setGuessed(data.guessed);
@@ -272,6 +295,26 @@ export default function Home() {
               </button>
             </div>
           </>
+        )}
+
+        {lanes.length > 0 && mode === "you" && seeds.length > 0 && (
+          <section className="mt-12">
+            <h3 className={`${D} text-2xl sm:text-3xl`}>Where in {shownCity} fits you</h3>
+            <p className="mt-1 text-sm text-[#6B6288]">Stronger color means a stronger match with your taste.</p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {[{ id: "all", name: "All my places" }, ...seeds].map((x) => (
+                <button key={x.id} onClick={() => loadMap(x.id)}
+                  className={`rounded-full px-4 py-1.5 text-sm font-semibold ${mapFor === x.id ? "bg-[#150B2E] text-white" : "bg-white text-[#4A4166] shadow-sm hover:bg-[#F1ECFF]"}`}>
+                  {x.name}
+                </button>
+              ))}
+            </div>
+            <div className="mt-4">
+              {mapState === "loading" && <div className="h-96 animate-pulse rounded-2xl bg-[#E6E0F7]" />}
+              {mapState === "none" && <p className="rounded-2xl bg-white p-5 text-[#6B6288] shadow-sm">We cannot draw a taste map for {shownCity} yet. Try a bigger city nearby.</p>}
+              {mapState === "idle" && mapPoints.length > 0 && <TasteMap points={mapPoints} color="#D6336C" />}
+            </div>
+          </section>
         )}
 
         {mode === "you" && lanes.map((lane, idx) => {
