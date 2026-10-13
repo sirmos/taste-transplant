@@ -235,12 +235,32 @@ const MEANINGFUL = /^urn:tag:(category|genre|setting|ambience|decor|customer_ide
 const sharedOf = (p: any, seedTags: Set<string>): string[] =>
   (p.tags ?? []).filter((t: any) => seedTags.has(tagId(t)) && MEANINGFUL.test(tagId(t)) && !GENERIC.has(tagId(t).split(":").pop()!)).map((t: any) => t.name as string);
 
-function shape(p: any, seedTags: Set<string>, exact: boolean) {
+// Where is this place? Qloo may name the fields differently, and a pair can come back swapped,
+// so we try the likely names and use the order that lands near the city.
+function coordsOf(p: any, center?: { lat?: number; lon?: number }) {
+  const loc = p.location ?? p.properties?.location ?? p.properties?.geocode ?? {};
+  const a = Number(loc.lat ?? loc.latitude ?? p.properties?.latitude);
+  const b = Number(loc.lon ?? loc.lng ?? loc.longitude ?? p.properties?.longitude);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return undefined;
+  const ok = (la: number, lo: number) => Math.abs(la) <= 90 && Math.abs(lo) <= 180;
+  let la = a;
+  let lo = b;
+  if (center?.lat !== undefined && center?.lon !== undefined) {
+    const d = (x: number, y: number) => Math.hypot(x - center.lat!, y - center.lon!);
+    if (!ok(la, lo) || d(b, a) < d(a, b)) [la, lo] = [b, a]; // a swapped pair
+    if (!ok(la, lo) || d(la, lo) > 3) return undefined; // more than about 300 km from the city: ignore it
+  } else if (!ok(la, lo)) return undefined;
+  return { lat: la, lon: lo };
+}
+
+function shape(p: any, seedTags: Set<string>, exact: boolean, center?: { lat?: number; lon?: number }) {
   const g = p.properties?.geocode;
+  const c = coordsOf(p, center);
   const tags: any[] = p.tags ?? [];
   return {
     id: p.entity_id,
     name: p.name,
+    ...(c ? { lat: c.lat, lon: c.lon } : {}),
     image: p.properties?.image?.url ?? "",
     where: [g?.neighborhood, g?.city].filter(Boolean).join(", ") || p.properties?.address || "",
     description: p.properties?.description ?? "",
@@ -350,13 +370,14 @@ export async function POST(req: NextRequest) {
         .sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0))
         .slice(0, 4);
       const others = best.list.filter((e) => !isSame(e)).slice(0, exact.length >= 3 ? 2 : 4);
+      if (best.list[0]) console.log("ENTITY KEYS", Object.keys(best.list[0]).join(","), "| location:", JSON.stringify(best.list[0].location ?? best.list[0].properties?.geocode ?? null).slice(0, 160));
       console.log("SEED", s.name, "| brand:", brand, "| kinds:", cats.map((c) => c.name).join(", ") || "none", "| used:", best.cat?.name ?? "none", "| same brand:", exact.length, "| similar:", others.length);
       return {
         id: s.entity_id,
         seed: s.name as string,
         title: `Because you loved ${s.name}`,
         kind: best.cat?.name ?? (exact.length ? "Same place" : "Closest matches"),
-        items: [...exact.map((e) => shape(e, seedTags, true)), ...others.map((e) => shape(e, seedTags, false))],
+        items: [...exact.map((e) => shape(e, seedTags, true, info)), ...others.map((e) => shape(e, seedTags, false, info))],
       };
     };
 
@@ -365,7 +386,7 @@ export async function POST(req: NextRequest) {
     if (keep.length === 0) {
       return NextResponse.json({ error: `Qloo found no matches in ${newCity} for those places. Try a bigger city nearby, or different places.` }, { status: 422 });
     }
-    const popularItems = popular.map((p) => shape(p, new Set(), false));
+    const popularItems = popular.map((p) => shape(p, new Set(), false, info));
 
     // Qloo's matching calls often leave out photos. The entity lookup has them, so fetch photos for the cards without one.
     const everyItem = [...keep.flatMap((l) => l.items), ...popularItems];
@@ -379,6 +400,8 @@ export async function POST(req: NextRequest) {
         if (url) everyItem.filter((i) => String(i.id).toUpperCase() === String(e.entity_id).toUpperCase()).forEach((i) => (i.image = url));
       }
     });
+    const sample = keep[0]?.items[0] as any;
+    console.log("COORDS", sample ? `${sample.name} lat=${sample.lat} lon=${sample.lon}` : "none");
     console.log("PHOTOS", everyItem.filter((i) => i.image).length, "of", everyItem.length);
 
     const body = {

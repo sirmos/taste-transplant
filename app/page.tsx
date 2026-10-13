@@ -1,9 +1,9 @@
 "use client";
-import { useState } from "react";
-import TasteMap, { type Point } from "./TasteMap";
+import { useMemo, useState } from "react";
+import TasteMap, { type Pin, type Point } from "./TasteMap";
 import { Coffee, Wine, Music, BookOpen, Shirt, MapPin, Copy, Check, Share2, Trophy, ShoppingBag, Utensils, Bed, TreePine, Landmark, Scissors, Sparkles } from "lucide-react";
 
-type Item = { id: string; name: string; image: string; where: string; description: string; tags: string[]; shared?: string[]; exact?: boolean };
+type Item = { id: string; name: string; image: string; where: string; description: string; tags: string[]; shared?: string[]; exact?: boolean; lat?: number; lon?: number };
 type Lane = { id: string; title: string; kind: string; items: Item[] };
 type Understood = { typed: string; matched: string | null; suggestions?: string[] };
 
@@ -101,6 +101,18 @@ export default function Home() {
   const [mapFor, setMapFor] = useState("all");
   const [mapPoints, setMapPoints] = useState<Point[]>([]);
   const [mapState, setMapState] = useState<"idle" | "loading" | "none">("idle");
+  // One dot for each match of the place you picked (or of all places), in that place's color.
+  const pins = useMemo<Pin[]>(() => {
+    const out: Pin[] = [];
+    lanes.forEach((lane, idx) => {
+      if (mapFor !== "all" && lane.id !== mapFor) return;
+      const color = PALETTE[idx % PALETTE.length].color;
+      for (const it of lane.items) {
+        if (typeof it.lat === "number" && typeof it.lon === "number") out.push({ lat: it.lat, lon: it.lon, name: it.name, where: it.where, color, exact: !!it.exact });
+      }
+    });
+    return out;
+  }, [lanes, mapFor]);
   const [understood, setUnderstood] = useState<Understood[]>([]);
   const [shownCity, setShownCity] = useState("");
   const [cityImage, setCityImage] = useState("");
@@ -310,9 +322,10 @@ export default function Home() {
               ))}
             </div>
             <div className="mt-4">
-              {mapState === "loading" && <div className="h-96 animate-pulse rounded-2xl bg-[#E6E0F7]" />}
-              {mapState === "none" && <p className="rounded-2xl bg-white p-5 text-[#6B6288] shadow-sm">We cannot draw a taste map for {shownCity} yet. Try a bigger city nearby.</p>}
-              {mapState === "idle" && mapPoints.length > 0 && <TasteMap points={mapPoints} color="#D6336C" />}
+              {pins.length === 0 && mapPoints.length === 0 && mapState === "loading" && <div className="h-96 animate-pulse rounded-2xl bg-[#E6E0F7]" />}
+              {pins.length === 0 && mapPoints.length === 0 && mapState !== "loading" && <p className="rounded-2xl bg-white p-5 text-[#6B6288] shadow-sm">We cannot draw a taste map for {shownCity} yet. Try a bigger city nearby.</p>}
+              {(pins.length > 0 || mapPoints.length > 0) && <TasteMap points={mapPoints} pins={pins} color="#D6336C" />}
+              {pins.length > 0 && <p className="mt-2 text-sm text-[#6B6288]">Each dot is one of your matches{mapFor === "all" ? ", colored by the place it matches" : ""}. Bigger dots are same-brand places. Hover or tap a dot to see its name.</p>}
             </div>
           </section>
         )}
