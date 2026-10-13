@@ -1,10 +1,11 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import TasteMap, { type Pin, type Point } from "./TasteMap";
-import { Coffee, Wine, Music, BookOpen, Shirt, MapPin, Copy, Check, Share2, Trophy, ShoppingBag, Utensils, Bed, TreePine, Landmark, Scissors, Sparkles } from "lucide-react";
+import { Coffee, Wine, Music, BookOpen, Shirt, MapPin, Copy, Check, Printer, Share2, Trophy, ShoppingBag, Utensils, Bed, TreePine, Landmark, Scissors, Sparkles } from "lucide-react";
 
 type Item = { id: string; name: string; image: string; where: string; description: string; tags: string[]; shared?: string[]; exact?: boolean; lat?: number; lon?: number };
-type Lane = { id: string; title: string; kind: string; items: Item[] };
+type Lane = { id: string; title: string; seed?: string; kind: string; items: Item[] };
+type Culture = { id: string; title: string; items: { id: string; name: string; image: string }[] }[];
 type Understood = { typed: string; matched: string | null; suggestions?: string[] };
 
 // Each lane gets its own color. The icon follows the kind of place.
@@ -29,6 +30,18 @@ function iconFor(kind: string) {
   return Sparkles;
 }
 const MAX_PLACES = 8;
+
+// The first-month plan sorts each match into a week by the kind of place it is. No guessing, just plain rules.
+const WEEKS = [
+  { title: "Week 1: Get set up", note: "The everyday basics", verb: "Visit" },
+  { title: "Week 2: Eat and shop", note: "Food and things for your room", verb: "Try" },
+  { title: "Week 3: Find your people", note: "Places where people gather", verb: "Go to" },
+  { title: "Week 4: Explore", note: "Treat yourself and see the city", verb: "Explore" },
+];
+const W1 = /bank|atm|post|pharmac|clinic|hospital|diagnostic|medical|office|agency|government|supermarket|grocery|market|telecom|transport|bus company|motors|logistics/i;
+const W3 = /church|mosque|worship|gospel|club|\bbar\b|pub|lounge|music|stadium|sport|gym|library|book|community|youth|camp|school|university/i;
+const W2 = /restaurant|food|cafe|coffee|bakery|grill|pizza|mall|shopping|store|clothing|vintage|boutique/i;
+const weekOf = (t: string) => (W1.test(t) ? 0 : W3.test(t) ? 2 : W2.test(t) ? 1 : 3);
 const D = "font-[family-name:var(--font-display)]";
 const slot = "field-sizing-content min-w-[7ch] border-b-2 border-[#FFC43D] bg-transparent px-1 text-[#FFC43D] placeholder:text-[#FFC43D]/40 focus:border-white focus:text-white focus:outline-none";
 
@@ -101,6 +114,46 @@ export default function Home() {
   const [mapFor, setMapFor] = useState("all");
   const [mapPoints, setMapPoints] = useState<Point[]>([]);
   const [mapState, setMapState] = useState<"idle" | "loading" | "none">("idle");
+  const [done, setDone] = useState<Record<string, boolean>>({});
+  const [culture, setCulture] = useState<Culture>([]);
+  const [cultureState, setCultureState] = useState<"idle" | "loading" | "none">("idle");
+  useEffect(() => {
+    try {
+      setDone(JSON.parse(localStorage.getItem("tt-done") ?? "{}"));
+    } catch {}
+  }, []);
+  // Each place you loved gives up to 2 things to do, in the week that fits that kind of place.
+  const plan = useMemo(() => {
+    const weeks = WEEKS.map((w) => ({ ...w, tasks: [] as { key: string; text: string; why: string }[] }));
+    for (const lane of lanes) {
+      const seed = lane.seed ?? lane.title;
+      const w = weeks[weekOf(`${lane.kind} ${seed}`)];
+      for (const it of lane.items.slice(0, 2)) {
+        if (w.tasks.length < 4) w.tasks.push({ key: `${lane.id}:${it.id}`, text: `${w.verb} ${it.name}`, why: it.exact ? `Same brand as ${seed}` : `Like ${seed}` });
+      }
+    }
+    return weeks;
+  }, [lanes]);
+  const planCount = plan.reduce((n, w) => n + w.tasks.length, 0);
+  const doneCount = plan.reduce((n, w) => n + w.tasks.filter((t) => done[t.key]).length, 0);
+  function toggle(k: string) {
+    const next = { ...done, [k]: !done[k] };
+    setDone(next);
+    try {
+      localStorage.setItem("tt-done", JSON.stringify(next));
+    } catch {}
+  }
+  async function loadCulture() {
+    setCultureState("loading");
+    try {
+      const res = await fetch("/api/culture", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ city: shownCity, ids: seeds.map((x) => x.id) }) });
+      const data = await res.json().catch(() => ({}));
+      setCulture(data.groups ?? []);
+      setCultureState(data.groups?.length ? "idle" : "none");
+    } catch {
+      setCultureState("none");
+    }
+  }
   // One dot for each match of the place you picked (or of all places), in that place's color.
   const pins = useMemo<Pin[]>(() => {
     const out: Pin[] = [];
@@ -187,6 +240,7 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-[#F7F4FF] font-[family-name:var(--font-body)] text-[#150B2E]">
+      <style>{`@media print { body * { visibility: hidden; } .print-area, .print-area * { visibility: visible; } .print-area { position: absolute; left: 0; top: 0; width: 100%; } .no-print { display: none !important; } }`}</style>
       <header className="relative overflow-hidden bg-[#150B2E] text-white">
         <div aria-hidden className="pointer-events-none absolute -left-24 top-24 h-96 w-96 rounded-full bg-[#7B5CFF]/40 blur-3xl" />
         <div aria-hidden className="pointer-events-none absolute -right-24 -top-16 h-80 w-80 rounded-full bg-[#FF5A5F]/30 blur-3xl" />
@@ -271,6 +325,14 @@ export default function Home() {
               </div>
             </div>
 
+            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {([[total, `matches in ${shownCity}`], [lanes.flatMap((l) => l.items).filter((i) => i.exact).length, "same-brand places"], ...(compared > 0 ? [[missed, "not on a popular list"]] : []), [lanes.length, "of your places matched"]] as [number, string][]).map(([n, label]) => (
+                <div key={label} className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className={`${D} text-3xl`}>{n}</div>
+                  <div className="text-sm text-[#6B6288]">{label}</div>
+                </div>
+              ))}
+            </div>
             <p className="mt-5 flex flex-wrap items-center gap-2 text-sm text-[#4A4166]">
               <span>We matched your list to:</span>
               {understood.map((u) => (
@@ -330,6 +392,40 @@ export default function Home() {
           </section>
         )}
 
+        {lanes.length > 0 && mode === "you" && planCount > 0 && (
+          <section className="print-area mt-12">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h3 className={`${D} text-2xl sm:text-3xl`}>Your first month in {shownCity}</h3>
+                <p className="mt-1 text-sm text-[#6B6288]">Built from your own matches. Tick things off as you go. {doneCount} of {planCount} done.</p>
+              </div>
+              <button onClick={() => window.print()} className="no-print inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold shadow-sm hover:bg-[#F1ECFF]">
+                <Printer size={16} /> Print or save as PDF
+              </button>
+            </div>
+            <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {plan.map((w) => (
+                <div key={w.title} className="rounded-2xl bg-white p-4 shadow-[0_1px_2px_rgba(21,11,46,.06),0_10px_28px_-14px_rgba(21,11,46,.25)]">
+                  <h4 className={`${D} text-lg`}>{w.title}</h4>
+                  <p className="text-xs text-[#6B6288]">{w.note}</p>
+                  <ul className="mt-3 space-y-3">
+                    {w.tasks.map((t) => (
+                      <li key={t.key} className="flex gap-2 text-sm">
+                        <input type="checkbox" checked={!!done[t.key]} onChange={() => toggle(t.key)} className="mt-1 h-4 w-4 accent-[#7B5CFF]" />
+                        <span>
+                          <span className={done[t.key] ? "text-[#8A83A3] line-through" : ""}>{t.text}</span>
+                          <span className="block text-xs text-[#6B6288]">{t.why}</span>
+                        </span>
+                      </li>
+                    ))}
+                    {w.tasks.length === 0 && <li className="text-sm text-[#8A83A3]">Nothing from your places fits this week.</li>}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         {mode === "you" && lanes.map((lane, idx) => {
           const c = { ...PALETTE[idx % PALETTE.length], Icon: iconFor(lane.kind) };
           return (
@@ -345,6 +441,34 @@ export default function Home() {
             </section>
           );
         })}
+
+        {lanes.length > 0 && mode === "you" && seeds.length > 0 && (
+          <section className="no-print mt-14">
+            <h3 className={`${D} text-2xl sm:text-3xl`}>Music, shows and podcasts for {shownCity}</h3>
+            <p className="mt-1 text-sm text-[#6B6288]">Picked from the places you loved, tuned to what people in {shownCity} like.</p>
+            {culture.length === 0 && (
+              <button onClick={loadCulture} disabled={cultureState === "loading"} className="mt-4 rounded-full bg-[#150B2E] px-6 py-3 font-semibold text-white hover:bg-[#1F6F8B] disabled:opacity-60">
+                {cultureState === "loading" ? "Finding music and shows..." : "Show me"}
+              </button>
+            )}
+            {cultureState === "none" && <p className="mt-4 rounded-2xl bg-white p-5 text-[#6B6288] shadow-sm">Nothing came back this time. Try again in a moment.</p>}
+            {culture.map((g) => (
+              <div key={g.id} className="mt-6">
+                <h4 className={`${D} text-xl`}>{g.title}</h4>
+                <ul className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                  {g.items.map((it) => (
+                    <li key={it.id} className="overflow-hidden rounded-xl bg-white shadow-sm">
+                      <div className="aspect-square bg-[#E6E0F7]">
+                        {it.image && <img src={it.image} alt="" referrerPolicy="no-referrer" className="h-full w-full object-cover" onError={(e) => (e.currentTarget.style.display = "none")} />}
+                      </div>
+                      <p className="p-2 text-sm font-semibold leading-tight">{it.name}</p>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </section>
+        )}
 
         {mode === "popular" && lanes.length > 0 && (
           popular.length === 0 ? (
