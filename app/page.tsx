@@ -46,7 +46,7 @@ const D = "font-[family-name:var(--font-display)]";
 const slot = "field-sizing-content min-w-[7ch] border-b-2 border-[#FFC43D] bg-transparent px-1 text-[#FFC43D] placeholder:text-[#FFC43D]/40 focus:border-white focus:text-white focus:outline-none";
 
 type Style = { color: string; soft: string; Icon: typeof Coffee };
-function Card({ it, c, mode, city }: { it: Item; c: Style; mode: "you" | "popular"; city: string }) {
+function Card({ it, c, mode, city }: { it: Item; c: Style; mode: "you" | "popular" | "rising"; city: string }) {
   async function share() {
     const maps = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${it.name} ${city}`)}`;
     let where = "";
@@ -63,7 +63,7 @@ function Card({ it, c, mode, city }: { it: Item; c: Style; mode: "you" | "popula
       window.alert("Trip details copied. Paste them to someone you trust.");
     }
   }
-  const pill = mode === "popular" ? "Popular pick" : it.exact ? "Same brand" : "";
+  const pill = mode === "popular" ? "Popular pick" : mode === "rising" ? "Rising now" : it.exact ? "Same brand" : "";
   return (
     <li className="overflow-hidden rounded-2xl bg-white shadow-[0_1px_2px_rgba(21,11,46,.06),0_10px_28px_-14px_rgba(21,11,46,.25)] transition hover:-translate-y-1">
       <div className="relative h-32 overflow-hidden" style={{ background: `linear-gradient(135deg, ${c.color}, ${c.color}CC)` }}>
@@ -117,6 +117,20 @@ export default function Home() {
   const [done, setDone] = useState<Record<string, boolean>>({});
   const [culture, setCulture] = useState<Culture>([]);
   const [cultureState, setCultureState] = useState<"idle" | "loading" | "none">("idle");
+  const [rising, setRising] = useState<Item[]>([]);
+  const [risingState, setRisingState] = useState<"idle" | "loading" | "none">("idle");
+  async function loadRising() {
+    if (rising.length > 0 || risingState === "loading") return;
+    setRisingState("loading");
+    try {
+      const res = await fetch("/api/rising", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ city: shownCity, ids: seeds.map((x) => x.id) }) });
+      const data = await res.json().catch(() => ({}));
+      setRising(data.items ?? []);
+      setRisingState(data.items?.length ? "idle" : "none");
+    } catch {
+      setRisingState("none");
+    }
+  }
   useEffect(() => {
     try {
       setDone(JSON.parse(localStorage.getItem("tt-done") ?? "{}"));
@@ -170,7 +184,7 @@ export default function Home() {
   const [shownCity, setShownCity] = useState("");
   const [cityImage, setCityImage] = useState("");
   const [guessed, setGuessed] = useState(false);
-  const [mode, setMode] = useState<"you" | "popular">("you");
+  const [mode, setMode] = useState<"you" | "popular" | "rising">("you");
   const [copied, setCopied] = useState(false);
 
   const typedCount = loves.split("\n").filter((l) => l.trim()).length;
@@ -179,10 +193,32 @@ export default function Home() {
   const popularIds = new Set(popular.map((p) => p.id));
   const missed = lanes.flatMap((l) => l.items).filter((i) => !popularIds.has(i.id)).length;
 
+  function sampleCorps() {
+    setHome("Uyo");
+    setNext("Lagos");
+    setLoves("NYSC Orientation Camp\nFirst Bank\nChicken Republic\nQua Iboe Church");
+  }
+
   function sample() {
     setHome("Toronto");
     setNext("Chicago");
     setLoves("St. Lawrence Market\nKensington Market\nBellwoods Brewery");
+  }
+
+  // Make a picture of a few matches and share it, or open it so it can be saved.
+  async function shareCard() {
+    const qs = new URLSearchParams({ city: shownCity });
+    lanes.slice(0, 4).forEach((l) => l.items[0] && qs.append("m", `${l.items[0].name}~${l.seed ?? ""}`));
+    const url = `/api/card?${qs.toString()}`;
+    try {
+      const blob = await (await fetch(url)).blob();
+      const file = new File([blob], "my-taste.png", { type: "image/png" });
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], text: `My taste, moved to ${shownCity}` });
+        return;
+      }
+    } catch {}
+    window.open(url, "_blank");
   }
 
   function copy() {
@@ -213,6 +249,8 @@ export default function Home() {
     setError("");
     setLanes([]);
     setMode("you");
+    setRising([]);
+    setRisingState("idle");
     try {
       const res = await fetch("/api/transplant", {
         method: "POST",
@@ -260,6 +298,7 @@ export default function Home() {
           <p className="mt-5 max-w-xl text-lg text-white/75">
             Moved somewhere new? Tell us the places you loved back home and we will find their closest matches in your new city.
           </p>
+          <p className="mt-3 max-w-xl text-sm text-white/60">For anyone starting over somewhere new: students, people moving for work, and corps members posted to a new state.</p>
 
           <div className="mt-10 max-w-3xl">
             <p className={`${D} text-3xl leading-snug sm:text-4xl`}>
@@ -285,6 +324,9 @@ export default function Home() {
               </button>
               <button onClick={sample} className="rounded-full border border-white/30 px-6 py-3.5 font-medium text-white transition hover:bg-white/10">
                 Try an example
+              </button>
+              <button onClick={sampleCorps} className="rounded-full border border-[#FFC43D]/60 px-6 py-3.5 font-medium text-[#FFC43D] transition hover:bg-[#FFC43D]/10">
+                Corps member example
               </button>
             </div>
           </div>
@@ -357,16 +399,24 @@ export default function Home() {
 
             <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
               <div className="inline-flex rounded-full bg-white p-1 shadow-sm" role="tablist">
-                {([["you", "Matched to your taste"], ["popular", `Popular in ${shownCity}`]] as const).map(([k, label]) => (
-                  <button key={k} role="tab" aria-selected={mode === k} onClick={() => setMode(k)}
+                {([["you", "Matched to your taste"], ["popular", `Popular in ${shownCity}`], ["rising", "Rising now"]] as const).map(([k, label]) => (
+                  <button key={k} role="tab" aria-selected={mode === k} onClick={() => {
+                      setMode(k);
+                      if (k === "rising") loadRising();
+                    }}
                     className={`rounded-full px-4 py-2 text-sm font-semibold transition ${mode === k ? "bg-[#150B2E] text-white" : "text-[#4A4166] hover:bg-[#F1ECFF]"}`}>
                     {label}
                   </button>
                 ))}
               </div>
-              <button onClick={copy} className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold shadow-sm hover:bg-[#F1ECFF]">
+              <div className="flex flex-wrap gap-2">
+                <button onClick={shareCard} className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold shadow-sm hover:bg-[#F1ECFF]">
+                  <Share2 size={16} /> Share as picture
+                </button>
+                <button onClick={copy} className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold shadow-sm hover:bg-[#F1ECFF]">
                 {copied ? <Check size={16} /> : <Copy size={16} />} {copied ? "Copied" : "Copy my list"}
               </button>
+              </div>
             </div>
           </>
         )}
@@ -468,6 +518,22 @@ export default function Home() {
               </div>
             ))}
           </section>
+        )}
+
+        {mode === "rising" && lanes.length > 0 && (
+          risingState === "loading" ? (
+            <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-64 animate-pulse rounded-2xl bg-[#E6E0F7]" />)}</div>
+          ) : rising.length === 0 ? (
+            <p className="mt-10 text-[#6B6288]">Rising places are not available for {shownCity} yet.</p>
+          ) : (
+            <section className="mt-12">
+              <h3 className={`${D} text-2xl sm:text-3xl`}>Rising in {shownCity}</h3>
+              <p className="mt-1 text-sm text-[#6B6288]">Places that fit your taste and are gaining attention right now.</p>
+              <ul className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                {rising.map((it) => <Card key={it.id} it={it} c={{ color: "#D6336C", soft: "#FBDDE8", Icon: Sparkles }} mode="rising" city={shownCity} />)}
+              </ul>
+            </section>
+          )
         )}
 
         {mode === "popular" && lanes.length > 0 && (
