@@ -31,17 +31,28 @@ function iconFor(kind: string) {
 }
 const MAX_PLACES = 8;
 
-// The first-month plan sorts each match into a week by the kind of place it is. No guessing, just plain rules.
-const WEEKS = [
-  { title: "Week 1: Get set up", note: "The everyday basics", verb: "Visit" },
-  { title: "Week 2: Eat and shop", note: "Food and things for your room", verb: "Try" },
-  { title: "Week 3: Find your people", note: "Places where people gather", verb: "Go to" },
-  { title: "Week 4: Explore", note: "Treat yourself and see the city", verb: "Explore" },
+// The first month, in four stages. Each stage shows places from your own matches first, then from what Qloo knows about the city.
+const STAGES = [
+  { title: "Days 1 to 3", sub: "Sort out the basics", color: "#D6336C" },
+  { title: "Week 1", sub: "Build your routine", color: "#4C5BE8" },
+  { title: "Weeks 2 and 3", sub: "Find your people", color: "#0E9384" },
+  { title: "Week 4", sub: "Make it yours", color: "#D9822B" },
 ];
-const W1 = /bank|atm|post|pharmac|clinic|hospital|diagnostic|medical|office|agency|government|supermarket|grocery|market|telecom|transport|bus company|motors|logistics/i;
-const W3 = /church|mosque|worship|gospel|club|\bbar\b|pub|lounge|music|stadium|sport|gym|library|book|community|youth|camp|school|university/i;
-const W2 = /restaurant|food|cafe|coffee|bakery|grill|pizza|mall|shopping|store|clothing|vintage|boutique/i;
-const weekOf = (t: string) => (W1.test(t) ? 0 : W3.test(t) ? 2 : W2.test(t) ? 1 : 3);
+// If one of your own matches is this kind of place, it goes in that slot first.
+const OWN: Record<string, RegExp> = {
+  bank: /bank|atm/i,
+  pharmacy: /pharmac|drug/i,
+  grocery: /supermarket|grocery|market/i,
+  clinic: /hospital|clinic|medical|diagnostic/i,
+  salon: /barber|salon|hair|beauty|personal care/i,
+  eat: /restaurant|food|grill|pizza|chicken|bakery|diner/i,
+  gym: /gym|fitness|sport|stadium/i,
+  bar: /\bbar\b|pub|club|lounge|brew|music/i,
+  mall: /mall|shopping/i,
+  sight: /park|beach|tourist|museum|garden|attraction/i,
+};
+type KitSlot = { id: string; label: string; stage: number; why: string; items: Item[] };
+type Task = { key: string; label: string; item: Item; note: string };
 const D = "font-[family-name:var(--font-display)]";
 const slot = "field-sizing-content min-w-[7ch] border-b-2 border-[#FFC43D] bg-transparent px-1 text-[#FFC43D] placeholder:text-[#FFC43D]/40 focus:border-white focus:text-white focus:outline-none";
 
@@ -136,20 +147,42 @@ export default function Home() {
       setDone(JSON.parse(localStorage.getItem("tt-done") ?? "{}"));
     } catch {}
   }, []);
-  // Each place you loved gives up to 2 things to do, in the week that fits that kind of place.
-  const plan = useMemo(() => {
-    const weeks = WEEKS.map((w) => ({ ...w, tasks: [] as { key: string; text: string; why: string }[] }));
-    for (const lane of lanes) {
-      const seed = lane.seed ?? lane.title;
-      const w = weeks[weekOf(`${lane.kind} ${seed}`)];
-      for (const it of lane.items.slice(0, 2)) {
-        if (w.tasks.length < 4) w.tasks.push({ key: `${lane.id}:${it.id}`, text: `${w.verb} ${it.name}`, why: it.exact ? `Same brand as ${seed}` : `Like ${seed}` });
+  const [kit, setKit] = useState<KitSlot[]>([]);
+  const [kitState, setKitState] = useState<"idle" | "loading" | "none">("idle");
+  // Your own matches go first in each slot, then places Qloo suggests for that kind of place.
+  const stages = useMemo(() => {
+    const out = STAGES.map((st) => ({ ...st, tasks: [] as Task[] }));
+    for (const slot of kit) {
+      const picks: { item: Item; note: string }[] = [];
+      const re = OWN[slot.id];
+      if (re) {
+        for (const lane of lanes) {
+          if (picks.length >= 1) break;
+          const first = lane.items[0];
+          if (first && re.test(`${lane.kind} ${lane.seed ?? ""}`)) picks.push({ item: first, note: first.exact ? `Same brand as ${lane.seed}` : `Like ${lane.seed}` });
+        }
       }
+      for (const it of slot.items) {
+        if (picks.length >= 2) break;
+        if (!picks.some((x) => x.item.id === it.id || x.item.name === it.name)) picks.push({ item: it, note: slot.why });
+      }
+      picks.forEach((x) => out[slot.stage].tasks.push({ key: `${slot.id}:${x.item.id}`, label: slot.label, item: x.item, note: x.note }));
     }
-    return weeks;
-  }, [lanes]);
-  const planCount = plan.reduce((n, w) => n + w.tasks.length, 0);
-  const doneCount = plan.reduce((n, w) => n + w.tasks.filter((t) => done[t.key]).length, 0);
+    return out;
+  }, [kit, lanes]);
+  const planCount = stages.reduce((n, st) => n + st.tasks.length, 0);
+  const doneCount = stages.reduce((n, st) => n + st.tasks.filter((t) => done[t.key]).length, 0);
+  async function loadKit() {
+    setKitState("loading");
+    try {
+      const res = await fetch("/api/kit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ city: shownCity, ids: seeds.map((x) => x.id) }) });
+      const data = await res.json().catch(() => ({}));
+      setKit(data.slots ?? []);
+      setKitState(data.slots?.length ? "idle" : "none");
+    } catch {
+      setKitState("none");
+    }
+  }
   function toggle(k: string) {
     const next = { ...done, [k]: !done[k] };
     setDone(next);
@@ -251,6 +284,10 @@ export default function Home() {
     setMode("you");
     setRising([]);
     setRisingState("idle");
+    setCulture([]);
+    setCultureState("idle");
+    setKit([]);
+    setKitState("idle");
     try {
       const res = await fetch("/api/transplant", {
         method: "POST",
@@ -442,33 +479,63 @@ export default function Home() {
           </section>
         )}
 
-        {lanes.length > 0 && mode === "you" && planCount > 0 && (
+        {lanes.length > 0 && mode === "you" && seeds.length > 0 && (
           <section className="print-area mt-12">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <h3 className={`${D} text-2xl sm:text-3xl`}>Your first month in {shownCity}</h3>
-                <p className="mt-1 text-sm text-[#6B6288]">Built from your own matches. Tick things off as you go. {doneCount} of {planCount} done.</p>
+                <p className="mt-1 text-sm text-[#6B6288]">
+                  {planCount > 0 ? `Tick things off as you go. ${doneCount} of ${planCount} done.` : `A plan for your first weeks, built from your places and from what Qloo knows about ${shownCity}.`}
+                </p>
               </div>
-              <button onClick={() => window.print()} className="no-print inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold shadow-sm hover:bg-[#F1ECFF]">
-                <Printer size={16} /> Print or save as PDF
-              </button>
+              {planCount > 0 ? (
+                <button onClick={() => window.print()} className="no-print inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold shadow-sm hover:bg-[#F1ECFF]">
+                  <Printer size={16} /> Print or save as PDF
+                </button>
+              ) : (
+                kitState !== "loading" && (
+                  <button onClick={loadKit} className="no-print rounded-full bg-[#150B2E] px-6 py-3 font-semibold text-white hover:bg-[#1F6F8B]">
+                    Build my first month
+                  </button>
+                )
+              )}
             </div>
-            <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              {plan.map((w) => (
-                <div key={w.title} className="rounded-2xl bg-white p-4 shadow-[0_1px_2px_rgba(21,11,46,.06),0_10px_28px_-14px_rgba(21,11,46,.25)]">
-                  <h4 className={`${D} text-lg`}>{w.title}</h4>
-                  <p className="text-xs text-[#6B6288]">{w.note}</p>
-                  <ul className="mt-3 space-y-3">
-                    {w.tasks.map((t) => (
-                      <li key={t.key} className="flex gap-2 text-sm">
-                        <input type="checkbox" checked={!!done[t.key]} onChange={() => toggle(t.key)} className="mt-1 h-4 w-4 accent-[#7B5CFF]" />
-                        <span>
-                          <span className={done[t.key] ? "text-[#8A83A3] line-through" : ""}>{t.text}</span>
-                          <span className="block text-xs text-[#6B6288]">{t.why}</span>
-                        </span>
+            {planCount > 0 && (
+              <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#E6E0F7]">
+                <div className="h-full rounded-full bg-[#7B5CFF] transition-all" style={{ width: `${(doneCount / planCount) * 100}%` }} />
+              </div>
+            )}
+            {kitState === "loading" && (
+              <div className="mt-6">
+                <p className="text-sm text-[#6B6288]">Building your first month. This takes about 15 seconds.</p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-24 animate-pulse rounded-2xl bg-[#E6E0F7]" />)}</div>
+              </div>
+            )}
+            {kitState === "none" && <p className="mt-6 rounded-2xl bg-white p-5 text-[#6B6288] shadow-sm">We could not build a plan for {shownCity} yet. Try a bigger city nearby.</p>}
+            <div className="mt-6 space-y-8">
+              {stages.filter((st) => st.tasks.length > 0).map((st) => (
+                <div key={st.title}>
+                  <div className="flex flex-wrap items-baseline gap-3 border-l-4 pl-3" style={{ borderColor: st.color }}>
+                    <h4 className={`${D} text-xl`}>{st.title}</h4>
+                    <span className="text-sm text-[#6B6288]">{st.sub}</span>
+                  </div>
+                  <ul className="mt-3 grid gap-3 sm:grid-cols-2">
+                    {st.tasks.map((t) => (
+                      <li key={t.key} className="flex gap-3 rounded-2xl bg-white p-3 shadow-[0_1px_2px_rgba(21,11,46,.06),0_10px_28px_-14px_rgba(21,11,46,.25)]">
+                        <input type="checkbox" checked={!!done[t.key]} onChange={() => toggle(t.key)} className="mt-1 h-4 w-4 shrink-0 accent-[#7B5CFF]" />
+                        <div className="h-16 w-16 shrink-0 overflow-hidden rounded-xl" style={{ background: st.color }}>
+                          {t.item.image && <img src={t.item.image} alt="" referrerPolicy="no-referrer" className="h-full w-full object-cover" onError={(e) => (e.currentTarget.style.display = "none")} />}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold" style={{ color: st.color }}>{t.label}</p>
+                          <p className={`font-semibold leading-tight ${done[t.key] ? "text-[#8A83A3] line-through" : ""}`}>{t.item.name}</p>
+                          <p className="text-xs text-[#6B6288]">{t.item.where ? `${t.item.where}. ` : ""}{t.note}</p>
+                          <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${t.item.name} ${shownCity}`)}`} target="_blank" rel="noreferrer" className="no-print mt-1 inline-flex items-center gap-1 text-xs font-semibold" style={{ color: st.color }}>
+                            <MapPin size={12} /> Open in Maps
+                          </a>
+                        </div>
                       </li>
                     ))}
-                    {w.tasks.length === 0 && <li className="text-sm text-[#8A83A3]">Nothing from your places fits this week.</li>}
                   </ul>
                 </div>
               ))}
