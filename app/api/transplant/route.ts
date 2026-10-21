@@ -406,6 +406,7 @@ export async function POST(req: NextRequest) {
 
     const body = {
       cityImage: info.photo,
+      homeCountry: String(seeds.find((x) => x.properties?.geocode?.country)?.properties?.geocode?.country ?? ""),
       cityPoint: info.lat !== undefined && info.lon !== undefined ? { lat: info.lat, lon: info.lon } : null,
       guessed: false,
       skipped,

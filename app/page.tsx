@@ -190,7 +190,8 @@ export default function Home() {
   const [last, setLast] = useState<{ home: string; loves: string[] } | null>(null);
   const [cityPoint, setCityPoint] = useState<{ lat: number; lon: number } | null>(null);
   const [dishText, setDishText] = useState("");
-  const [dishGroups, setDishGroups] = useState<{ dish: string; items: Item[] }[]>([]);
+  const [homeCountry, setHomeCountry] = useState("");
+  const [dishGroups, setDishGroups] = useState<{ dish: string; items: Item[]; note?: string }[]>([]);
   const [dishState, setDishState] = useState<"idle" | "loading" | "none">("idle");
   const [cmpCity, setCmpCity] = useState("");
   const [cmp, setCmp] = useState<{ city: string; lanes: Lane[]; cityImage: string } | null>(null);
@@ -206,7 +207,7 @@ export default function Home() {
       const res = await fetch("/api/dishes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ city: shownCity, dishes, ids: seeds.map((x) => x.id), lat: cityPoint?.lat, lon: cityPoint?.lon }),
+        body: JSON.stringify({ city: shownCity, dishes, ids: seeds.map((x) => x.id), lat: cityPoint?.lat, lon: cityPoint?.lon, homeCountry }),
       });
       const data = await res.json().catch(() => ({}));
       setDishGroups(data.groups ?? []);
@@ -367,6 +368,7 @@ export default function Home() {
       setEmpty(data.empty ?? []);
       setSeeds(data.seeds ?? []);
       setCityPoint(data.cityPoint ?? null);
+      setHomeCountry(data.homeCountry ?? "");
       setLast({ home, loves: loves.split("\n") });
       loadMap("all", data.seeds ?? [], next);
       setUnderstood(data.understood);
@@ -673,9 +675,9 @@ export default function Home() {
         {lanes.length > 0 && mode === "you" && seeds.length > 0 && (
           <section className="no-print mt-14">
             <h3 className={`${D} text-2xl sm:text-3xl`}>Miss a dish?</h3>
-            <p className="mt-1 text-sm text-[#6B6288]">Type up to 3 foods you miss, separated by commas. We look for places in {shownCity} that serve them.</p>
+            <p className="mt-1 text-sm text-[#6B6288]">Type up to 3 foods you miss, separated by commas. Add the cuisine in brackets for better luck, like ekpang nkukwu (Nigerian).</p>
             <div className="mt-4 flex flex-wrap gap-3">
-              <input value={dishText} onChange={(e) => setDishText(e.target.value)} placeholder="jollof rice, afang soup" className={inputCls} />
+              <input value={dishText} onChange={(e) => setDishText(e.target.value)} placeholder="jollof rice, ekpang nkukwu (Nigerian)" className={inputCls} />
               <button onClick={findDishes} disabled={dishState === "loading" || !dishText.trim()} className="rounded-full bg-[#150B2E] px-6 py-3 font-semibold text-white hover:bg-[#1F6F8B] disabled:opacity-60">
                 {dishState === "loading" ? "Looking..." : `Find it in ${shownCity}`}
               </button>
@@ -684,8 +686,9 @@ export default function Home() {
             {dishGroups.map((g) => (
               <div key={g.dish} className="mt-6">
                 <h4 className={`${D} text-xl`}>{g.dish}</h4>
+                {g.note && <p className="mt-1 text-sm text-[#6B6288]">{g.note}</p>}
                 {g.items.length === 0 ? (
-                  <p className="mt-2 text-sm text-[#6B6288]">No place in {shownCity} lists {g.dish} in Qloo&apos;s data yet. Try the name of the dish a different way.</p>
+                  <p className="mt-2 text-sm text-[#6B6288]">No place in {shownCity} lists {g.dish} in Qloo&apos;s data yet. Try another spelling, or add the cuisine in brackets, like (Nigerian).</p>
                 ) : (
                   <ul className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                     {g.items.map((it) => <Card key={it.id} it={it} c={DISH_STYLE} mode="dish" city={shownCity} />)}
