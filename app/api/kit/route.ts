@@ -6,16 +6,16 @@ export const maxDuration = 60;
 // The things almost everyone needs when they arrive somewhere new, in the order they usually need them.
 // "stage" is the part of the first month: 0 = days 1 to 3, 1 = week 1, 2 = weeks 2 and 3, 3 = week 4.
 const SLOTS = [
-  { id: "bank", label: "A bank or ATM", stage: 0, term: "bank", why: "For cash and transfers" },
-  { id: "pharmacy", label: "A pharmacy", stage: 0, term: "pharmacy", why: "Basic medicine close by" },
-  { id: "grocery", label: "Somewhere to stock up", stage: 0, term: "supermarket", why: "Food for your first days" },
-  { id: "clinic", label: "A hospital or clinic", stage: 1, term: "hospital", why: "Know where to go if you feel unwell" },
-  { id: "salon", label: "A barber or salon", stage: 1, term: "hair salon", why: "Look sharp for your first week" },
-  { id: "eat", label: "A good meal out", stage: 1, term: "restaurant", why: "Your first proper meal out" },
-  { id: "gym", label: "Somewhere to move", stage: 2, term: "gym", why: "A good way to meet people" },
-  { id: "bar", label: "A night out", stage: 2, term: "bar", why: "Where people go to relax" },
-  { id: "mall", label: "A mall to browse", stage: 3, term: "shopping mall", why: "For the things your room needs" },
-  { id: "sight", label: "Something to see", stage: 3, term: "tourist attraction", why: "See your new city" },
+  { id: "bank", by: "quality", label: "A bank or ATM", stage: 0, term: "bank", why: "For cash and transfers" },
+  { id: "pharmacy", by: "quality", label: "A pharmacy", stage: 0, term: "pharmacy", why: "Basic medicine close by" },
+  { id: "grocery", by: "quality", label: "Somewhere to stock up", stage: 0, term: "supermarket", why: "Food for your first days" },
+  { id: "clinic", by: "quality", label: "A hospital or clinic", stage: 1, term: "hospital", why: "Know where to go if you feel unwell" },
+  { id: "salon", by: "quality", label: "A barber or salon", stage: 1, term: "hair salon", why: "Look sharp for your first week" },
+  { id: "eat", by: "taste", label: "A good meal out", stage: 1, term: "restaurant", why: "Your first proper meal out" },
+  { id: "gym", by: "taste", label: "Somewhere to move", stage: 2, term: "gym", why: "A good way to meet people" },
+  { id: "bar", by: "taste", label: "A night out", stage: 2, term: "bar", why: "Where people go to relax" },
+  { id: "mall", by: "taste", label: "A mall to browse", stage: 3, term: "shopping mall", why: "For the things your room needs" },
+  { id: "sight", by: "taste", label: "Something to see", stage: 3, term: "tourist attraction", why: "See your new city" },
 ];
 
 const listOf = (d: any): any[] => (Array.isArray(d?.results) ? d.results : d?.results?.entities ?? []);
@@ -66,7 +66,11 @@ export async function POST(req: NextRequest) {
       const tag = await tagFor(slot.term);
       if (!tag) continue;
       // The tag keeps results to this kind of place, and your places rank them by taste.
-      const list = listOf(await call("/v2/insights", { "filter.type": "urn:entity:place", "filter.location.query": String(city), "filter.tags": tag, "signal.interests.entities": joined, take: 3 }));
+      const base = { "filter.type": "urn:entity:place", "filter.location.query": String(city), "filter.tags": tag, take: 4 };
+      let list: any[] = [];
+      // The basics: well-rated places first. Everything else, and anything still empty: ranked by your taste.
+      if (slot.by === "quality") list = listOf(await call("/v2/insights", { ...base, "bias.quality": "high" }));
+      if (list.length === 0) list = listOf(await call("/v2/insights", { ...base, "signal.interests.entities": joined }));
       if (list.length === 0) continue;
       slots.push({
         ...slot,

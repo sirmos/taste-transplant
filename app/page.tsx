@@ -155,6 +155,12 @@ export default function Home() {
   // Your own matches go first in each slot, then places Qloo suggests for that kind of place.
   const stages = useMemo(() => {
     const out = STAGES.map((st) => ({ ...st, tasks: [] as Task[] }));
+    const used = new Set<string>(); // each place appears once in the whole plan
+    const fresh = (it: Item) => !used.has(it.id) && !used.has(it.name.toLowerCase());
+    const take = (it: Item) => {
+      used.add(it.id);
+      used.add(it.name.toLowerCase());
+    };
     for (const slot of kit) {
       const picks: { item: Item; note: string }[] = [];
       const re = OWN[slot.id];
@@ -162,12 +168,18 @@ export default function Home() {
         for (const lane of lanes) {
           if (picks.length >= 1) break;
           const first = lane.items[0];
-          if (first && re.test(`${lane.kind} ${lane.seed ?? ""}`)) picks.push({ item: first, note: first.exact ? `Same brand as ${lane.seed}` : `Like ${lane.seed}` });
+          if (first && fresh(first) && re.test(`${lane.kind} ${lane.seed ?? ""}`)) {
+            picks.push({ item: first, note: first.exact ? `Same brand as ${lane.seed}` : `Like ${lane.seed}` });
+            take(first);
+          }
         }
       }
       for (const it of slot.items) {
         if (picks.length >= 2) break;
-        if (!picks.some((x) => x.item.id === it.id || x.item.name === it.name)) picks.push({ item: it, note: slot.why });
+        if (fresh(it)) {
+          picks.push({ item: it, note: slot.why });
+          take(it);
+        }
       }
       picks.forEach((x) => out[slot.stage].tasks.push({ key: `${slot.id}:${x.item.id}`, label: slot.label, item: x.item, note: x.note }));
     }
@@ -754,7 +766,7 @@ export default function Home() {
           )
         )}
 
-        {lanes.length > 0 && <p className="mt-14 text-xs text-[#6B6288]">Taste data from Qloo.{cityImage ? " City photo from Wikipedia." : ""}</p>}
+        {lanes.length > 0 && <p className="mt-14 text-xs text-[#6B6288]">Taste data from Qloo.{cityImage ? " City photo from Wikipedia." : ""} An independent project, not affiliated with NYSC or any government body.</p>}
       </div>
     </main>
   );
