@@ -406,6 +406,7 @@ export async function POST(req: NextRequest) {
 
     const body = {
       cityImage: info.photo,
+      cityPoint: info.lat !== undefined && info.lon !== undefined ? { lat: info.lat, lon: info.lon } : null,
       guessed: false,
       skipped,
       understood: found.map((f) => ({ typed: f.typed, matched: f.strict?.name ?? null, suggestions: f.suggestions })),

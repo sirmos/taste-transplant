@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import TasteMap, { type Pin, type Point } from "./TasteMap";
 import { Coffee, Wine, Music, BookOpen, Shirt, MapPin, Copy, Check, Printer, Share2, Trophy, ShoppingBag, Utensils, Bed, TreePine, Landmark, Scissors, Sparkles } from "lucide-react";
 
-type Item = { id: string; name: string; image: string; where: string; description: string; tags: string[]; shared?: string[]; exact?: boolean; lat?: number; lon?: number };
+type Item = { id: string; name: string; image: string; where: string; description: string; tags: string[]; shared?: string[]; exact?: boolean; lat?: number; lon?: number; serves?: string };
 type Lane = { id: string; title: string; seed?: string; kind: string; items: Item[] };
 type Culture = { id: string; title: string; items: { id: string; name: string; image: string }[] }[];
 type Understood = { typed: string; matched: string | null; suggestions?: string[] };
@@ -57,7 +57,7 @@ const D = "font-[family-name:var(--font-display)]";
 const slot = "field-sizing-content min-w-[7ch] border-b-2 border-[#FFC43D] bg-transparent px-1 text-[#FFC43D] placeholder:text-[#FFC43D]/40 focus:border-white focus:text-white focus:outline-none";
 
 type Style = { color: string; soft: string; Icon: typeof Coffee };
-function Card({ it, c, mode, city }: { it: Item; c: Style; mode: "you" | "popular" | "rising"; city: string }) {
+function Card({ it, c, mode, city }: { it: Item; c: Style; mode: "you" | "popular" | "rising" | "dish"; city: string }) {
   async function share() {
     const maps = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${it.name} ${city}`)}`;
     let where = "";
@@ -74,7 +74,7 @@ function Card({ it, c, mode, city }: { it: Item; c: Style; mode: "you" | "popula
       window.alert("Trip details copied. Paste them to someone you trust.");
     }
   }
-  const pill = mode === "popular" ? "Popular pick" : mode === "rising" ? "Rising now" : it.exact ? "Same brand" : "";
+  const pill = mode === "popular" ? "Popular pick" : mode === "rising" ? "Rising now" : mode === "dish" ? it.serves || "Serves it" : it.exact ? "Same brand" : "";
   return (
     <li className="overflow-hidden rounded-2xl bg-white shadow-[0_1px_2px_rgba(21,11,46,.06),0_10px_28px_-14px_rgba(21,11,46,.25)] transition hover:-translate-y-1">
       <div className="relative h-32 overflow-hidden" style={{ background: `linear-gradient(135deg, ${c.color}, ${c.color}CC)` }}>
@@ -110,6 +110,9 @@ function Card({ it, c, mode, city }: { it: Item; c: Style; mode: "you" | "popula
     </li>
   );
 }
+
+const DISH_STYLE = { color: "#D9822B", soft: "#FCEBD6", Icon: Utensils };
+const inputCls = "min-w-[14rem] flex-1 rounded-full border border-[#B8C4CF] bg-white px-5 py-3 text-[#16202B] placeholder:text-[#8796A5] focus:outline-2 focus:outline-[#7B5CFF]";
 
 export default function Home() {
   const [home, setHome] = useState("");
@@ -183,6 +186,64 @@ export default function Home() {
       setKitState("none");
     }
   }
+  // What the person typed in the search, kept so we can run the same places through a second city.
+  const [last, setLast] = useState<{ home: string; loves: string[] } | null>(null);
+  const [cityPoint, setCityPoint] = useState<{ lat: number; lon: number } | null>(null);
+  const [dishText, setDishText] = useState("");
+  const [dishGroups, setDishGroups] = useState<{ dish: string; items: Item[] }[]>([]);
+  const [dishState, setDishState] = useState<"idle" | "loading" | "none">("idle");
+  const [cmpCity, setCmpCity] = useState("");
+  const [cmp, setCmp] = useState<{ city: string; lanes: Lane[]; cityImage: string } | null>(null);
+  const [cmpState, setCmpState] = useState<"idle" | "loading" | "error">("idle");
+  const [cmpError, setCmpError] = useState("");
+
+  async function findDishes() {
+    const dishes = dishText.split(",").map((x) => x.trim()).filter(Boolean).slice(0, 3);
+    if (dishes.length === 0) return;
+    setDishState("loading");
+    setDishGroups([]);
+    try {
+      const res = await fetch("/api/dishes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ city: shownCity, dishes, ids: seeds.map((x) => x.id), lat: cityPoint?.lat, lon: cityPoint?.lon }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setDishGroups(data.groups ?? []);
+      setDishState(data.groups?.length ? "idle" : "none");
+    } catch {
+      setDishState("none");
+    }
+  }
+
+  // Run the same places through a second city, then compare the two.
+  async function compare() {
+    if (!cmpCity.trim() || !last) return;
+    setCmpState("loading");
+    setCmp(null);
+    try {
+      const res = await fetch("/api/transplant", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ homeCity: last.home, newCity: cmpCity, loves: last.loves }) });
+      const data = await res.json().catch(() => ({ error: "The server took too long or failed. Try again in a minute." }));
+      if (!res.ok) throw new Error(data.error || "Something went wrong. Try again.");
+      setCmp({ city: cmpCity.trim(), lanes: data.lanes, cityImage: data.cityImage });
+      setCmpState("idle");
+    } catch (e) {
+      setCmpError((e as Error).message);
+      setCmpState("error");
+    }
+  }
+  const statsOf = (ls: Lane[]) => ({ matched: ls.length, exact: ls.flatMap((l) => l.items).filter((i) => i.exact).length, similar: ls.flatMap((l) => l.items).filter((i) => !i.exact).length });
+  const cmpRows = cmp
+    ? [
+        { label: `Your places with a match (of ${seeds.length})`, a: statsOf(lanes).matched, b: statsOf(cmp.lanes).matched },
+        { label: "Same-brand places", a: statsOf(lanes).exact, b: statsOf(cmp.lanes).exact },
+        { label: "Similar places found", a: statsOf(lanes).similar, b: statsOf(cmp.lanes).similar },
+      ]
+    : [];
+  const cmpWinner = cmpRows.map((r) => (r.a === r.b ? -1 : r.a > r.b ? 0 : 1));
+  const winsA = cmpWinner.filter((w) => w === 0).length;
+  const winsB = cmpWinner.filter((w) => w === 1).length;
+
   function toggle(k: string) {
     const next = { ...done, [k]: !done[k] };
     setDone(next);
@@ -288,6 +349,10 @@ export default function Home() {
     setCultureState("idle");
     setKit([]);
     setKitState("idle");
+    setDishGroups([]);
+    setDishState("idle");
+    setCmp(null);
+    setCmpState("idle");
     try {
       const res = await fetch("/api/transplant", {
         method: "POST",
@@ -301,6 +366,8 @@ export default function Home() {
       setSkipped(data.skipped ?? []);
       setEmpty(data.empty ?? []);
       setSeeds(data.seeds ?? []);
+      setCityPoint(data.cityPoint ?? null);
+      setLast({ home, loves: loves.split("\n") });
       loadMap("all", data.seeds ?? [], next);
       setUnderstood(data.understood);
       setCityImage(data.cityImage);
@@ -601,6 +668,73 @@ export default function Home() {
               </ul>
             </section>
           )
+        )}
+
+        {lanes.length > 0 && mode === "you" && seeds.length > 0 && (
+          <section className="no-print mt-14">
+            <h3 className={`${D} text-2xl sm:text-3xl`}>Miss a dish?</h3>
+            <p className="mt-1 text-sm text-[#6B6288]">Type up to 3 foods you miss, separated by commas. We look for places in {shownCity} that serve them.</p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <input value={dishText} onChange={(e) => setDishText(e.target.value)} placeholder="jollof rice, afang soup" className={inputCls} />
+              <button onClick={findDishes} disabled={dishState === "loading" || !dishText.trim()} className="rounded-full bg-[#150B2E] px-6 py-3 font-semibold text-white hover:bg-[#1F6F8B] disabled:opacity-60">
+                {dishState === "loading" ? "Looking..." : `Find it in ${shownCity}`}
+              </button>
+            </div>
+            {dishState === "none" && <p className="mt-4 rounded-2xl bg-white p-5 text-[#6B6288] shadow-sm">We could not search for dishes in {shownCity} right now. Try again in a moment.</p>}
+            {dishGroups.map((g) => (
+              <div key={g.dish} className="mt-6">
+                <h4 className={`${D} text-xl`}>{g.dish}</h4>
+                {g.items.length === 0 ? (
+                  <p className="mt-2 text-sm text-[#6B6288]">No place in {shownCity} lists {g.dish} in Qloo&apos;s data yet. Try the name of the dish a different way.</p>
+                ) : (
+                  <ul className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    {g.items.map((it) => <Card key={it.id} it={it} c={DISH_STYLE} mode="dish" city={shownCity} />)}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </section>
+        )}
+
+        {lanes.length > 0 && mode === "you" && last && (
+          <section className="no-print mt-14">
+            <h3 className={`${D} text-2xl sm:text-3xl`}>Which city fits you better?</h3>
+            <p className="mt-1 text-sm text-[#6B6288]">Choosing between two cities? Type the other one and we run the same places through it.</p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <input value={cmpCity} onChange={(e) => setCmpCity(e.target.value)} placeholder="Another city" className={inputCls} />
+              <button onClick={compare} disabled={cmpState === "loading" || !cmpCity.trim()} className="rounded-full bg-[#150B2E] px-6 py-3 font-semibold text-white hover:bg-[#1F6F8B] disabled:opacity-60">
+                {cmpState === "loading" ? "Comparing..." : "Compare"}
+              </button>
+            </div>
+            {cmpState === "loading" && <p className="mt-3 text-sm text-[#6B6288]">Searching {cmpCity}. This takes about 20 seconds.</p>}
+            {cmpState === "error" && <p className="mt-4 rounded-2xl border border-[#E8A5A5] bg-[#FDECEC] p-4 text-[#7A1F1F]">{cmpError}</p>}
+            {cmp && (
+              <div className="mt-6">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {[{ city: shownCity, img: cityImage }, { city: cmp.city, img: cmp.cityImage }].map((col, ci) => (
+                    <div key={`${col.city}-${ci}`} className="overflow-hidden rounded-2xl bg-white shadow-sm">
+                      <div className="relative h-28 bg-[#150B2E]">
+                        {col.img && <img src={col.img} alt="" referrerPolicy="no-referrer" className="h-full w-full object-cover opacity-70" onError={(e) => (e.currentTarget.style.display = "none")} />}
+                        <h4 className={`${D} absolute bottom-3 left-4 text-2xl text-white`}>{col.city}</h4>
+                      </div>
+                      <ul className="divide-y divide-[#EEE9FB]">
+                        {cmpRows.map((r, ri) => (
+                          <li key={r.label} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
+                            <span className="text-[#4A4166]">{r.label}</span>
+                            <span className={`${D} rounded-full px-3 py-1 text-xl ${cmpWinner[ri] === ci ? "bg-[#D5F2EE] text-[#0E6F63]" : ""}`}>{ci === 0 ? r.a : r.b}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-4 font-semibold">
+                  {winsA === winsB ? "Both cities fit you about the same." : `${winsA > winsB ? shownCity : cmp.city} fits you better on ${Math.max(winsA, winsB)} of ${cmpRows.length} counts.`}
+                </p>
+                <p className="mt-1 text-sm text-[#6B6288]">This only counts matches in Qloo&apos;s data. It does not weigh jobs, rent or safety.</p>
+              </div>
+            )}
+          </section>
         )}
 
         {mode === "popular" && lanes.length > 0 && (
