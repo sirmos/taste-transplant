@@ -4,8 +4,6 @@ Moved somewhere new? Tell the app a few places you loved back home. It finds the
 
 Live demo: https://taste-transplant.vercel.app/
 
-Built for the Qloo Agent Hackathon. This is an independent project. It is not affiliated with NYSC or any government body.
-
 ## Who it is for
 
 Anyone starting over in a new place: students, people who move for work, and NYSC corps members who are posted to a state they have never lived in.
